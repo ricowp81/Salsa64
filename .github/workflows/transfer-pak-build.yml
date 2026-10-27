@@ -4,14 +4,27 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "src/core/**"
-      - "src/frontend/**"
-      - "tests/**"
-      - "tools/**"
-      - "docker/**"
-      - "README.md"
+      # Core files that implement or integrate the Transfer Pak in Joybus/state handling.
+      - "src/core/pif.c"
+      - "src/core/pif.h"
+      - "src/core/state.c"
+      - "src/core/transferpak.c"
+      - "src/core/transferpak.h"
+      # Frontend accessory selection, ROM/save file support, and its build/strings.
+      - "src/frontend/Makefile"
+      - "src/frontend/i18n.c"
+      - "src/frontend/menu.c"
+      - "src/frontend/menu.h"
+      - "src/frontend/transferpakfile.c"
+      - "src/frontend/transferpakfile.h"
+      # Tests that cover the shared integration points and Transfer Pak behavior.
+      - "tests/unit/Makefile"
+      - "tests/unit/test.c"
+      - "tests/unit/test.h"
+      - "tests/unit/test_menu.c"
+      - "tests/unit/test_pif.c"
+      - "tests/unit/test_transferpak.c"
       - "docs/transferpak.md"
-      - ".github/workflows/transfer-pak-build.yml"
   workflow_dispatch:
 
 permissions:
