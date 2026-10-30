@@ -22,6 +22,29 @@
  * esperar el cuadro) para que haga lo mismo que el camino de juego: la resta
  * con mínimo 1. Las direcciones salen del volcado de la RDRAM de nuestra
  * propia emulación; nada de material de Nintendo.
+ *
+ * Donkey Kong 64 (USA), la música del DK Rap (issue #51): el gestor de música
+ * (0x80602600, una vez por cuadro) lleva por cada una de sus 4 casillas la
+ * canción pedida y un estado por petición (0x80745924: 0 sin tocar, 1 cargada
+ * y con PLAY enviado, 2 sonando). Pasa a 2 cuando ve el reproductor de la
+ * casilla en AL_PLAYING; si lo ve parado y el estado no es 2, vuelve a llamar
+ * a la función que para el reproductor, carga la canción de la ROM y manda
+ * PLAY (0x8060a6a0). El hilo de audio procesa el PLAY en su siguiente cuadro
+ * de audio, cada 2 campos. En la consola el gestor vuelve a mirar cuando el
+ * PLAY ya se procesó (en ares: una sola carga y estado 2 al cuadro siguiente).
+ * Con nuestro CPU, más rápido por instrucción, al cambiar a la escena del rap
+ * cabe un cuadro de un solo retrazado; desde ahí el hilo principal corre en
+ * la fase de campo contraria y su recarga cae justo antes del cuadro de
+ * audio, cada cuadro: el reproductor nunca llega a sonar y la canción se
+ * vuelve a cargar 30 veces por segundo durante ~96 s, hasta que la fase
+ * cambia; entonces entra a destiempo con la letra.
+ *
+ * El arreglo cambia ese camino para que con el estado en 1 (PLAY enviado,
+ * aún sin confirmar) el gestor espere al reproductor en vez de recargar la
+ * canción; con 0 carga y con 2 sigue como el original. Son 20 palabras en
+ * 0x806029DC–0x80602A28: como el «or a0, s1» de la carga se mueve a la
+ * ranura del primer salto, s1 deja de usarse y las dos llamadas toman a0
+ * de s4 (s1 = s4 en el original).
  */
 #include "core/gamefix.h"
 
@@ -31,17 +54,18 @@
 
 struct gamefix {
 	const char *name;
+	const char *off;    /* archivo del directorio de datos que lo apaga, o NULL */
 	char code[4];       /* encabezado 0x3B–0x3E */
 	uint32_t crc1, crc2;  /* encabezado 0x10 y 0x14 */
 	uint32_t pa;        /* dirección física del código */
 	unsigned n;         /* palabras */
-	uint32_t orig[16];
-	uint32_t fix[16];
+	uint32_t orig[20];
+	uint32_t fix[20];
 };
 
 static const struct gamefix fixes[] = {
 	{
-		"Donkey Kong 64 (USA): retrazados entre cuadros de las escenas con mínimo 1",
+		"Donkey Kong 64 (USA): retrazados entre cuadros de las escenas con mínimo 1", NULL,
 		{ 'N', 'D', 'O', 'E' }, 0xEC58EABFu, 0xAD7C7169u, 0x00600914u, 11,
 		{
 			0x3C038076u,  /* lui   v1, 0x8076 */
@@ -70,6 +94,55 @@ static const struct gamefix fixes[] = {
 			0x00000000u,  /* nop */
 		},
 	},
+	{
+		"Donkey Kong 64 (USA): el gestor de música espera el PLAY en vez de recargar la canción",
+		"dk64-musica-vieja",
+		{ 'N', 'D', 'O', 'E' }, 0xEC58EABFu, 0xAD7C7169u, 0x006029DCu, 20,
+		{
+			0x02808825u,  /* or    s1, s4, zero         (ranura de «bne canción != pedida, carga») */
+			0x87395924u,  /* lh    t9, 0x5924(t9)       estado de la petición */
+			0x24010002u,  /* addiu at, zero, 2 */
+			0x02202025u,  /* or    a0, s1, zero */
+			0x1721000Bu,  /* bne   t9, at, carga        0 o 1: parar, cargar y PLAY otra vez */
+			0x00034080u,  /* sll   t0, v1, 2 */
+			0x02684821u,  /* addu  t1, s3, t0 */
+			0x0C182983u,  /* jal   0x8060a60c           2: volumen y PLAY sin recargar */
+			0x8D250000u,  /* lw    a1, 0(t1) */
+			0x00145080u,  /* sll   t2, s4, 2 */
+			0x3C048077u,  /* lui   a0, 0x8077 */
+			0x008A2021u,  /* addu  a0, a0, t2 */
+			0x0C1CDF94u,  /* jal   0x80737e50 */
+			0x8C84BF20u,  /* lw    a0, -0x40E0(a0)      reproductor de la casilla */
+			0x1000000Fu,  /* b     siguiente casilla */
+			0x26940001u,  /* addiu s4, s4, 1 */
+			0x00035880u,  /* carga: sll t3, v1, 2 */
+			0x026B6021u,  /* addu  t4, s3, t3 */
+			0x8D860000u,  /* lw    a2, 0(t4)            volumen */
+			0x02202025u,  /* or    a0, s1, zero         casilla */
+		},
+		{
+			0x02802025u,  /* or    a0, s4, zero         casilla, para los dos caminos */
+			0x87395924u,  /* lh    t9, 0x5924(t9) */
+			0x1320000Du,  /* beq   t9, zero, carga      0: cargar y PLAY */
+			0x00034080u,  /* sll   t0, v1, 2 */
+			0x33210001u,  /* andi  at, t9, 1 */
+			0x14200017u,  /* bne   at, zero, 0x80602a50 1: esperar al reproductor (siguiente casilla) */
+			0x02684821u,  /* addu  t1, s3, t0 */
+			0x0C182983u,  /* jal   0x8060a60c           2: como el original */
+			0x8D250000u,  /* lw    a1, 0(t1) */
+			0x00145080u,  /* sll   t2, s4, 2 */
+			0x3C048077u,  /* lui   a0, 0x8077 */
+			0x008A2021u,  /* addu  a0, a0, t2 */
+			0x0C1CDF94u,  /* jal   0x80737e50 */
+			0x8C84BF20u,  /* lw    a0, -0x40E0(a0) */
+			0x1000000Fu,  /* b     siguiente casilla */
+			0x26940001u,  /* addiu s4, s4, 1 */
+			0x00035880u,  /* carga: sll t3, v1, 2 */
+			0x026B6021u,  /* addu  t4, s3, t3 */
+			0x8D860000u,  /* lw    a2, 0(t4) */
+			0x02802025u,  /* or    a0, s4, zero */
+		},
+	},
 };
 
 #define NFIXES (sizeof fixes / sizeof fixes[0])
@@ -81,29 +154,54 @@ static uint32_t rd32(const uint8_t *p)
 
 void salsa64_gamefix_select(struct salsa64_bus *bus)
 {
-	bus->gamefix = 0;
+	bus->gamefix_sel = bus->gamefix_on = 0;
 	if (!bus->rom || bus->rom_resident < 0x40)
 		return;
 	const uint8_t *h = bus->rom;
 	for (unsigned i = 0; i < NFIXES; i++) {
 		const struct gamefix *f = &fixes[i];
-		if (!memcmp(h + 0x3B, f->code, 4) && rd32(h + 0x10) == f->crc1 && rd32(h + 0x14) == f->crc2) {
-			bus->gamefix = (uint8_t)(i + 1);
-			return;
-		}
+		if (!memcmp(h + 0x3B, f->code, 4) && rd32(h + 0x10) == f->crc1 && rd32(h + 0x14) == f->crc2)
+			bus->gamefix_sel |= 1u << i;
 	}
+	bus->gamefix_on = bus->gamefix_sel;
 }
 
-const char *salsa64_gamefix_name(const struct salsa64_bus *bus)
+/* Índice en fixes[] del k-ésimo arreglo elegido, o -1. */
+static int nth(const struct salsa64_bus *bus, unsigned k)
 {
-	return bus->gamefix ? fixes[bus->gamefix - 1].name : NULL;
+	for (unsigned i = 0; i < NFIXES; i++)
+		if ((bus->gamefix_sel >> i & 1) && !k--)
+			return (int)i;
+	return -1;
 }
 
-void salsa64_gamefix_field(struct salsa64_bus *bus)
+const char *salsa64_gamefix_name(const struct salsa64_bus *bus, unsigned k)
 {
-	if (!bus->gamefix)
-		return;
-	const struct gamefix *f = &fixes[bus->gamefix - 1];
+	int i = nth(bus, k);
+	return i < 0 ? NULL : fixes[i].name;
+}
+
+const char *salsa64_gamefix_switch(const struct salsa64_bus *bus, unsigned k)
+{
+	int i = nth(bus, k);
+	return i < 0 ? NULL : fixes[i].off;
+}
+
+bool salsa64_gamefix_enabled(const struct salsa64_bus *bus, unsigned k)
+{
+	int i = nth(bus, k);
+	return i >= 0 && (bus->gamefix_on >> i & 1);
+}
+
+void salsa64_gamefix_disable(struct salsa64_bus *bus, unsigned k)
+{
+	int i = nth(bus, k);
+	if (i >= 0)
+		bus->gamefix_on &= ~(1u << i);
+}
+
+static void apply(struct salsa64_bus *bus, const struct gamefix *f)
+{
 	if ((uint64_t)f->pa + 4 * f->n > bus->rdram_size)
 		return;
 	uint8_t *p = bus->rdram + f->pa;
@@ -118,4 +216,11 @@ void salsa64_gamefix_field(struct salsa64_bus *bus)
 	}
 	salsa64_bus_rdram_patched(bus, f->pa, 4 * f->n);
 	bus->gamefix_applied++;
+}
+
+void salsa64_gamefix_field(struct salsa64_bus *bus)
+{
+	for (unsigned i = 0; i < NFIXES; i++)
+		if (bus->gamefix_on >> i & 1)
+			apply(bus, &fixes[i]);
 }

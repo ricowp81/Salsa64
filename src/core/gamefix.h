@@ -12,16 +12,24 @@
 #ifndef SALSA64_CORE_GAMEFIX_H
 #define SALSA64_CORE_GAMEFIX_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct salsa64_bus;
 
-/* Elige los arreglos de la ROM puesta en el bus (encabezado en bus->rom). */
+/* Elige los arreglos de la ROM puesta en el bus (encabezado en bus->rom), todos
+ * encendidos. */
 void salsa64_gamefix_select(struct salsa64_bus *bus);
-/* Al empezar cada campo del VI: aplica los arreglos cuyo código original
- * esté en la RDRAM (y avisa al recompilador). */
+/* Al empezar cada campo del VI: aplica los arreglos encendidos cuyo código
+ * original esté en la RDRAM (y avisa al recompilador). */
 void salsa64_gamefix_field(struct salsa64_bus *bus);
-/* Nombre del arreglo elegido para la ROM o NULL si no hay. */
-const char *salsa64_gamefix_name(const struct salsa64_bus *bus);
+/* El k-ésimo arreglo elegido para la ROM (k = 0, 1, …): su nombre, o NULL si
+ * no hay tantos. */
+const char *salsa64_gamefix_name(const struct salsa64_bus *bus, unsigned k);
+/* Archivo del directorio de datos que lo apaga, o NULL si no tiene. */
+const char *salsa64_gamefix_switch(const struct salsa64_bus *bus, unsigned k);
+bool salsa64_gamefix_enabled(const struct salsa64_bus *bus, unsigned k);
+/* Lo apaga hasta la próxima ROM (antes de que el juego corra). */
+void salsa64_gamefix_disable(struct salsa64_bus *bus, unsigned k);
 
 #endif

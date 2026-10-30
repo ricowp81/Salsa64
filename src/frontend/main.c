@@ -5320,8 +5320,8 @@ static void game_close(void)
 	salsa64_filters_release();
 	salsa64_log("cierre: emulación detenida tras %u campos (%u emulados, %u descartados por la cola, %u sin ranura)",
 		    n64.bus.vi.fields, emu_stats.fields, emu_stats.dropped, emu_stats.no_slot);
-	if (salsa64_gamefix_name(&n64.bus))
-		salsa64_log("cierre: arreglo de juego aplicado %u veces", n64.bus.gamefix_applied);
+	if (n64.bus.gamefix_on)
+		salsa64_log("cierre: arreglos de juego aplicados %u veces", n64.bus.gamefix_applied);
 	if (n64.cpu.dcache_sweep_cycles)
 		salsa64_log("cierre: %u barridos de la caché de datos", n64.cpu.dcache_sweeps);
 	savefile_close(&save_file);
@@ -5619,6 +5619,27 @@ static void font_select(int lang)
 	font_script = script;
 	rsxkit_ui_font(rsxkit_sysfont_source());
 	font_log();
+}
+
+/* Arreglos por juego en el código de la RDRAM (core/gamefix.c), elegidos al
+ * poner la ROM; los que tienen interruptor se apagan con su archivo en el
+ * directorio de datos (p. ej. dk64-musica-vieja). */
+static void gamefix_setup(void)
+{
+	for (unsigned k = 0; salsa64_gamefix_name(&n64.bus, k); k++) {
+		const char *off = salsa64_gamefix_switch(&n64.bus, k);
+		char path[128];
+		if (off) {
+			snprintf(path, sizeof path, SALSA64_DATA_DIR "/%s", off);
+			if (file_exists(path)) {
+				salsa64_gamefix_disable(&n64.bus, k);
+				salsa64_log("arreglo de juego: %s: apagado (%s)", salsa64_gamefix_name(&n64.bus, k), off);
+				continue;
+			}
+		}
+		salsa64_log("arreglo de juego: %s (se aplica cuando el juego carga ese código%s%s%s)",
+			    salsa64_gamefix_name(&n64.bus, k), off ? "; " : "", off ? off : "", off ? " lo apaga" : "");
+	}
 }
 
 /* Ritmo del RCP (rsp.c, gfx_model; docs/ritmo-rcp.md): una tarea gráfica no
@@ -6058,8 +6079,7 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 		    scale_policy.current, scale_policy.maximum, scale_auto_ceiling(&scale_policy));
 	rdp_scale_set(scale_wanted(), scale_capped() ? "al abrir el juego, tope de 3× con un CRT" : "al abrir el juego");
 	load_cheats(source);
-	if (salsa64_gamefix_name(&n64.bus))
-		salsa64_log("arreglo de juego: %s (se aplica cuando el juego carga ese código)", salsa64_gamefix_name(&n64.bus));
+	gamefix_setup();
 	ra_game_open(rom, rom_size, rdram, SALSA64_RDRAM_MAX);  /* RetroAchievements, si está activado y hay sesión */
 	if (selftest_on)
 		selftest_start();

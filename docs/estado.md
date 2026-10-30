@@ -1,5 +1,30 @@
 # Estado
 
+## 2026-10-30 — #51, Donkey Kong 64: el DK Rap sin música (gestor de música, arreglo por juego)
+
+- En el host, sin tocar el control y con la HLE: la música de la intro se corta hacia los 12 s
+  del audio del AI y entra a los ~106 s (solo voces y ruidos entre medio), igual que en el reporte.
+  `--lle=all` la arregla; `--lle=all` solo para el audio no (la HLE de audio no es: naudio da lo
+  mismo que el microcódigo salvo dos bytes de un búfer de retardo), ni la duración de la tarea de
+  audio. Lo decide el ritmo de los cuadros: una sola tarea gráfica (la primera del juego, campo
+  176) que dure ≥ 361 000 ciclos, o `rsp-ritmo` al 100 % (al 96 % ya falla: margen del 4 %).
+- Causa (volcado de la RDRAM y vigilancia de escrituras, sin material de Nintendo): el gestor de
+  música (0x80602600, una vez por cuadro) pide la canción 0x4B en la casilla 0. Carga y PLAY
+  (0x8060a6a0) dejan el estado de la petición (0x80745924) en 1; pasa a 2 cuando ve el
+  reproductor en AL_PLAYING. Si lo ve parado con estado ≠ 2, lo para, vuelve a cargar la canción
+  (0x10123098, 0x125E bytes) y manda otro PLAY. Al cambiar a la escena del rap (campo ~826) cabe
+  un cuadro de un retrazado (retrazados 12, 2, 1, 2…); desde ahí el hilo principal corre en la
+  fase de campo contraria y cada recarga cae ~100 000 ciclos antes del cuadro del hilo de audio:
+  el PLAY nunca se confirma y la canción se recarga cada cuadro durante ~96 s, hasta que la fase
+  cambia. En ares (GDB, puntos de parada en la carga y en el paso a estado 2): una sola carga en
+  el retrazado 911 y estado 2 en el 913.
+- Arreglo (`core/gamefix.c`, ahora con varios arreglos por ROM y un interruptor por arreglo): 20
+  palabras en 0x806029DC–0x80602A28; con estado 1 el gestor pasa a la siguiente casilla en vez de
+  recargar; 0 carga y 2 siguen igual. Interruptor `dk64-musica-vieja` (en el host,
+  `SALSA64_GAMEFIX_OFF=dk64-musica-vieja`). Con el arreglo, la música entra a los 12,75 s del audio
+  sin `rsp-ritmo` y con él, y la canción se carga una vez.
+- Falta la PS3.
+
 ## 2026-10-29 — Pila del SPE 0 tras unir F-Zero X afín y Vigilante 8 (rama pila-spe0)
 
 - Con las dos ramas unidas (main 19f4cfa) el paquete no se armaba: holgura 800 / 1024 / 12944 /
