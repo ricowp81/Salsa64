@@ -1653,6 +1653,24 @@ void salsa64_debug_spmem(uint32_t reg, uint32_t v)
 }
 #endif
 
+/* SALSA64_GAMEFIX_OFF=archivo[,archivo…]: apaga los arreglos por juego con ese
+ * interruptor, como su archivo en /dev_hdd0/salsa64/ (p. ej. dk64-musica-vieja). */
+static void gamefix_env(struct salsa64_bus *bus)
+{
+	const char *off = getenv("SALSA64_GAMEFIX_OFF");
+	if (!off)
+		return;
+	for (unsigned k = 0; salsa64_gamefix_name(bus, k); k++) {
+		const char *sw = salsa64_gamefix_switch(bus, k);
+		if (!sw)
+			continue;
+		size_t n = strlen(sw);
+		for (const char *p = off; (p = strstr(p, sw)) != NULL; p += n)
+			if ((p == off || p[-1] == ',') && (p[n] == '\0' || p[n] == ','))
+				salsa64_gamefix_disable(bus, k);
+	}
+}
+
 static unsigned trace_rsp_left, trace_vi_left, trace_audio_left;
 
 /* --trace-audio: los opcodes de la lista de audio de una tarea (8 bytes por
@@ -4105,6 +4123,7 @@ int main(int argc, char **argv)
 		salsa64_bus_set_rom_paged(&n64.bus, rom, 4096, (uint32_t)rom_size, &rom_pg);
 	else
 		salsa64_bus_set_rom(&n64.bus, rom, (uint32_t)(rom_size > UINT32_MAX ? UINT32_MAX : rom_size));
+	gamefix_env(&n64.bus);
 	struct salsa64_boot_info info;
 	if (!salsa64_boot_hle(&n64, tv, &info)) {
 		fprintf(stderr, "salsa64-run: no se pudo arrancar %s: %s\n", path, info.error);
@@ -4187,6 +4206,7 @@ int main(int argc, char **argv)
 				salsa64_bus_set_rom_paged(&ref.bus, rom, 4096, (uint32_t)rom_size, &rom_pg);
 			else
 				salsa64_bus_set_rom(&ref.bus, rom, (uint32_t)(rom_size > UINT32_MAX ? UINT32_MAX : rom_size));
+			gamefix_env(&ref.bus);
 			ref.bus.rsp.gfx_cycles = n64.bus.rsp.gfx_cycles;
 			ref.bus.rsp.gfx_model = n64.bus.rsp.gfx_model;
 			ref.bus.rsp.dp_cycles = n64.bus.rsp.dp_cycles;
@@ -4334,9 +4354,11 @@ int main(int argc, char **argv)
 	if (n64.cpu.dcache_sweep_cycles)
 		fprintf(stderr, "salsa64-run: barridos de la caché de datos: %u (%u ciclos cada uno)\n", n64.cpu.dcache_sweeps,
 			n64.cpu.dcache_sweep_cycles);
-	if (salsa64_gamefix_name(&n64.bus))
-		fprintf(stderr, "salsa64-run: arreglo de juego: %s; aplicado %u veces\n", salsa64_gamefix_name(&n64.bus),
-			n64.bus.gamefix_applied);
+	for (unsigned k = 0; salsa64_gamefix_name(&n64.bus, k); k++)
+		fprintf(stderr, "salsa64-run: arreglo de juego: %s%s\n", salsa64_gamefix_name(&n64.bus, k),
+			salsa64_gamefix_enabled(&n64.bus, k) ? "" : " (apagado)");
+	if (n64.bus.gamefix_on)
+		fprintf(stderr, "salsa64-run: arreglos de juego aplicados %u veces\n", n64.bus.gamefix_applied);
 	if (use_rec) {
 		salsa64_rec_diag_report(&rec, us ? (salsa64_rec_trace_now() - tb_start) * 1000000 / us : 0, true, save_log);
 		const struct salsa64_rec_stats *st = &rec.stats;

@@ -6,6 +6,21 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
 
 ## [Unreleased]
 
+### Fixed
+- **Donkey Kong 64 (USA): the DK Rap intro had no music, and it came in about
+  1.5 minutes late and out of sync with the lyrics** (#51). The game's music
+  manager starts a song and, on the next game frame, expects the audio thread
+  to have processed the PLAY; if the player is still stopped it stops it,
+  reloads the song from the ROM and sends PLAY again. With the emulated CPU
+  (faster than the real one) the switch to the rap scene fits a one-retrace
+  frame, the main thread ends up on the opposite field phase and every reload
+  lands just before the audio thread's frame: the song was reloaded 30 times
+  per second for ~96 s and never played (on ares the song loads once and plays
+  on the next frame). The emulator now patches that manager in RAM, only when
+  the original code is there, so a song whose PLAY is pending waits for the
+  player instead of being reloaded. Only the USA retail ROM is affected; the
+  file `dk64-musica-vieja` in `/dev_hdd0/salsa64/` turns the patch off.
+
 ## [0.2.15] — 2026-10-29
 
 ### Changed
