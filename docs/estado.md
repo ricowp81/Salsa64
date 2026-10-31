@@ -1,5 +1,50 @@
 # Estado
 
+## 2026-10-31 — #3, Conker: el Great Mighty Poo no abre la boca (PLAY sin confirmar, arreglo por juego)
+
+- Reproducido en el host con el estado de la ronda anterior en Chapters (partida nueva,
+  WELDERSBENCH, Sloprano marcado) y Sweet Melody sin tocar el control: el Poo aparece, la boca no
+  se mueve, la escena se queda y la música cae desde el campo ~16950 (RMS ~1000 contra 3000–4000).
+- Causa (vigía de la RDRAM y de instrucciones, build con `SALSA64_WATCH_MEM`; el código del juego
+  va por la TLB en 0x10000000 → física 0): el gestor de música (0x1000D2F8, hilo 3, una vez por
+  cuadro y canal) guarda por canal un registro de la canción (raíces en 0x800417B0). Para empezar
+  una canción pone el registro y manda PLAY (0x100084D8 → 0x10017AA0: un evento en la cola del
+  reproductor 0x8007B820, que el hilo 4 procesa en su cuadro de audio, cada 2 campos). En cada
+  cuadro, si ve el reproductor parado (+0x2C = 0), da la canción por terminada y borra el
+  registro. Al entrar a la cueva: PLAY en el campo 13150, el cuadro siguiente del juego llega en
+  el 13151 (1,28 M ciclos después), ve el reproductor parado y borra el registro; el hilo de audio
+  procesa el PLAY en el 13152 (2,84 M ciclos después del PLAY). La canción suena huérfana; en el
+  jefe (campo 16944) el juego la vuelve a pedir, la para (espera activa en 0x10008CE8 hasta el
+  16952), manda PLAY y en el 16953 vuelve a borrar el registro (procesado en el 16954). Sin
+  registro el gestor ya no atiende la canción (ni llama a su función, tabla en 0x8002B07C): el
+  Poo no abre la boca y la escena espera.
+- Descartes y variantes: la HLE de audio no toca el estado del reproductor (lo cambia el hilo 4
+  en el CPU). Con `--lle=all --lle-check-audio` (385 de 2450 tareas con diferencias, sobre todo
+  MP3 de voces) este recorrido funciona, pero por fase: el PLAY sale en el 13151 y se procesa en
+  el 13152, antes del cuadro del gestor. Igual entrando a Chapters desde el arranque (partida del
+  autor y los bytes 0x800E9D01–04 = 0xFF de la base de trucos de mupen64plus): PLAY en el 8151,
+  procesado en el 8152. Con `-DSALSA64_CPI=2`, sin arreglo, el recorrido malo funciona (el Poo
+  abre la boca y la escena sigue). El fallo depende de en qué fase cae el PLAY respecto del
+  cuadro de audio.
+- Referencia (ares por GDB, intérprete, mismo recorrido por Chapters desde el arranque; el control
+  se fuerza parcheando `osContGetReadData` y el campo es el contador de retrazados del juego,
+  0x800429BC; el guion va 300 campos más tarde que en el host): registro creado en el 8519, PLAY en el 8529 (línea 0), procesado en el 8531 y el
+  siguiente cuadro del gestor en el 8533 (línea 166), ya con el reproductor sonando. En la consola
+  del PLAY al siguiente cuadro del gestor pasan ~4,3 campos, contra 0,8–1,0 en el host: el cuadro
+  de audio (cada 2 campos) siempre llega antes. La canción entra 631 campos después de elegir
+  Sweet Melody en ares y 552 en el host (con y sin arreglo).
+- Arreglo (`core/gamefix.c`, tercer arreglo por juego): la función que manda PLAY (0x100084D8,
+  25 palabras, solo con el código original y la ROM USA NFUE) hace lo mismo y además espera a
+  que el estado deje de ser 0, como el juego ya espera el STOP en 0x10008CE8 (tope de 0x1E0000
+  vueltas, ~6 campos). Interruptor `conker-musica-vieja` (en el host,
+  `SALSA64_GAMEFIX_OFF=conker-musica-vieja`). Con el arreglo: PLAY en el 13150, la función
+  vuelve en el 13152 tras el PLAY procesado, el registro sigue, el Poo abre la boca y la escena
+  sigue; por Chapters desde el arranque, igual (vuelve en el 8152). Con el interruptor, el registro se
+  borra en el 13151 como antes.
+- Pruebas: suite gamefix (palabras exactas, interruptor, otra región y otro CRC intactos, y la
+  función parcheada corrida en el intérprete: espera con el reproductor parado, sin PLAY si suena,
+  PLAY sin esperar en pausa, tope). Falta la PS3.
+
 ## 2026-10-30 — #51, Donkey Kong 64: el DK Rap sin música (gestor de música, arreglo por juego)
 
 - En el host, sin tocar el control y con la HLE: la música de la intro se corta hacia los 12 s

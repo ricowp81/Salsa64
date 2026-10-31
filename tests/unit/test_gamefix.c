@@ -154,6 +154,171 @@ static void dk64_music_switch_off(void)
 	salsa64_bus_set_rom(&t_n64.bus, NULL, 0);
 }
 
+/* Conker USA: la función que manda PLAY (0x100084D8 por la TLB, física
+ * 0x84D8), como la carga el juego. */
+#define CONKER_PA 0x000084D8u
+
+static const uint32_t conker_orig[25] = {
+	0x27BDFFE0u, 0xAFBF0014u, 0xAFA40020u, 0x308500FFu, 0x3C0F8004u, 0x25EFC900u, 0x00057080u,
+	0x01CF1021u, 0x8C440000u, 0x0C005EA0u, 0xAFA2001Cu, 0x10400006u, 0x8FB8001Cu, 0x0C005EA0u,
+	0x8F040000u, 0x24010003u, 0x54410005u, 0x8FBF0014u, 0x8FB9001Cu, 0x0C005EA8u, 0x8F240000u,
+	0x8FBF0014u, 0x27BD0020u, 0x03E00008u, 0x00000000u,
+};
+
+static void conker_header(void)
+{
+	set_header("NFUE", 0x30C7AC50u, 0x7704072Du);
+}
+
+static void load_conker_orig(void)
+{
+	for (unsigned k = 0; k < 25; k++)
+		t_wr32(CONKER_PA + 4 * k, conker_orig[k]);
+}
+
+/* Para correr la función parcheada desde KSEG0 (0x800084D8: misma RDRAM; sus
+ * jal van a 0x80017A80/0x80017AA0, también la misma): la tabla de
+ * reproductores en 0x8003C900 con el 0 en 0x80040000 (estado en +0x2C), y en
+ * 0x80017AA0 un PLAY de prueba que cuenta las llamadas en T_DATA y, si
+ * T_DATA+4 no es 0, lo deja como estado (el hilo de audio que lo procesa en
+ * el acto). T_CODE llama con a0 = 0 y se queda en un `b .`. */
+#define CONKER_PLAYER_PA 0x00040000u
+#define CONKER_STATE_PA  (CONKER_PLAYER_PA + 0x2C)
+
+static void conker_setup(uint32_t state, uint32_t consume)
+{
+	t_wr32(0x0003C900u, 0x80000000u | CONKER_PLAYER_PA);
+	t_wr32(CONKER_STATE_PA, state);
+	t_wr32(T_DATA_PA, 0);
+	t_wr32(T_DATA_PA + 4, consume);
+	static const uint32_t play[] = {
+		LUI(9, 0x8000), LW(8, 0x2000, 9), ADDIU(8, 8, 1), SW(8, 0x2000, 9), LW(10, 0x2004, 9),
+		BEQ(10, 0, 2), NOP, SW(10, 0x2C, 4), JR(31), NOP,
+	};
+	for (unsigned k = 0; k < sizeof play / sizeof play[0]; k++)
+		t_wr32(0x00017AA0u + 4 * k, play[k]);
+	T_LOAD(JAL(0x800084D8u), ADDIU(4, 0, 0), BEQ(0, 0, 0xFFFF), NOP);
+	salsa64_cpu_set_pc(CPU, T_CODE);
+	R[29] = 0xFFFFFFFF80300000ull;
+}
+
+static bool conker_returned(void)
+{
+	return (CPU->pc == T_CODE + 8 || CPU->pc == T_CODE + 12) && R[29] == 0xFFFFFFFF80300000ull;
+}
+
+static bool conker_waiting(void)
+{
+	return CPU->pc >= 0xFFFFFFFF8000851Cull && CPU->pc <= 0xFFFFFFFF8000852Cull;
+}
+
+static void conker_patched(void)
+{
+	conker_header();
+	CHECK(salsa64_gamefix_name(&t_n64.bus, 0) != NULL);
+	CHECK(salsa64_gamefix_name(&t_n64.bus, 1) == NULL);
+	CHECK(!strcmp(salsa64_gamefix_switch(&t_n64.bus, 0), "conker-musica-vieja"));
+	load_conker_orig();
+	spin_field();
+	CHECK_EQ(t_n64.bus.gamefix_applied, 1);
+	CHECK_EQ(t_rd32(CONKER_PA + 4 * 8), 0x8C82002Cu);   /* lw   v0, 0x2C(a0) */
+	CHECK_EQ(t_rd32(CONKER_PA + 4 * 13), 0x0C005EA8u);  /* jal  0x10017aa0 */
+	CHECK_EQ(t_rd32(CONKER_PA + 4 * 16), 0x3C01001Eu);  /* lui  at, 0x1E */
+	CHECK_EQ(t_rd32(CONKER_PA + 4 * 20), 0x1C20FFFCu);  /* bgtz at, espera */
+	CHECK_EQ(t_rd32(CONKER_PA + 4 * 24), 0x00000000u);
+	spin_field();
+	CHECK_EQ(t_n64.bus.gamefix_applied, 1);
+	salsa64_bus_set_rom(&t_n64.bus, NULL, 0);
+}
+
+static void conker_other_code_untouched(void)
+{
+	conker_header();
+	load_conker_orig();
+	t_wr32(CONKER_PA + 4 * 19, 0x0C005EA9u);  /* otra llamada */
+	spin_field();
+	CHECK_EQ(t_n64.bus.gamefix_applied, 0);
+	CHECK_EQ(t_rd32(CONKER_PA + 4 * 8), conker_orig[8]);
+	set_header("NFUE", 0x30C7AC50u, 0x00000000u);  /* otro CRC */
+	CHECK(salsa64_gamefix_name(&t_n64.bus, 0) == NULL);
+	set_header("NFUP", 0x30C7AC50u, 0x7704072Du);  /* otra región */
+	CHECK(salsa64_gamefix_name(&t_n64.bus, 0) == NULL);
+	salsa64_bus_set_rom(&t_n64.bus, NULL, 0);
+}
+
+/* Parado: manda PLAY y espera a que el estado deje de ser 0. */
+static void conker_play_waits(void)
+{
+	conker_header();
+	load_conker_orig();
+	spin_field();
+	conker_setup(0, 0);
+	t_step(400);
+	CHECK_EQ(t_rd32(T_DATA_PA), 1);
+	CHECK(conker_waiting());
+	t_wr32(CONKER_STATE_PA, 1);  /* el hilo de audio procesó el PLAY */
+	t_step(20);
+	CHECK(conker_returned());
+	CHECK_EQ(t_rd32(T_DATA_PA), 1);
+	salsa64_bus_set_rom(&t_n64.bus, NULL, 0);
+}
+
+/* Parado y procesado en el acto: vuelve enseguida; sonando: sin PLAY; en
+ * pausa (3): PLAY sin esperar, como el original. */
+static void conker_play_states(void)
+{
+	conker_header();
+	load_conker_orig();
+	spin_field();
+	conker_setup(0, 1);
+	t_step(60);
+	CHECK(conker_returned());
+	CHECK_EQ(t_rd32(T_DATA_PA), 1);
+	CHECK_EQ(t_rd32(CONKER_STATE_PA), 1);
+	conker_setup(1, 0);
+	t_step(60);
+	CHECK(conker_returned());
+	CHECK_EQ(t_rd32(T_DATA_PA), 0);
+	conker_setup(3, 0);
+	t_step(60);
+	CHECK(conker_returned());
+	CHECK_EQ(t_rd32(T_DATA_PA), 1);
+	conker_setup(2, 0);  /* deteniéndose: ni PLAY ni espera */
+	t_step(60);
+	CHECK(conker_returned());
+	CHECK_EQ(t_rd32(T_DATA_PA), 0);
+	salsa64_bus_set_rom(&t_n64.bus, NULL, 0);
+}
+
+/* Si el PLAY nunca se procesa, la espera termina (con el tope reducido a
+ * 0x10000 vueltas para la prueba). */
+static void conker_wait_bounded(void)
+{
+	conker_header();
+	load_conker_orig();
+	spin_field();
+	t_wr32(CONKER_PA + 4 * 16, LUI(1, 1));
+	conker_setup(0, 0);
+	t_step(0x10000 * 5 + 200);
+	CHECK(conker_returned());
+	CHECK_EQ(t_rd32(T_DATA_PA), 1);
+	CHECK_EQ(t_rd32(CONKER_STATE_PA), 0);
+	salsa64_bus_set_rom(&t_n64.bus, NULL, 0);
+}
+
+static void conker_switch_off(void)
+{
+	conker_header();
+	salsa64_gamefix_disable(&t_n64.bus, 0);
+	CHECK(!salsa64_gamefix_enabled(&t_n64.bus, 0));
+	load_conker_orig();
+	spin_field();
+	CHECK_EQ(t_n64.bus.gamefix_applied, 0);
+	for (unsigned k = 0; k < 25; k++)
+		CHECK_EQ(t_rd32(CONKER_PA + 4 * k), conker_orig[k]);
+	salsa64_bus_set_rom(&t_n64.bus, NULL, 0);
+}
+
 void t_suite_gamefix(void)
 {
 	RUN(dk64_patched_once);
@@ -162,4 +327,10 @@ void t_suite_gamefix(void)
 	RUN(dk64_two_fixes);
 	RUN(dk64_music_patched);
 	RUN(dk64_music_switch_off);
+	RUN(conker_patched);
+	RUN(conker_other_code_untouched);
+	RUN(conker_play_waits);
+	RUN(conker_play_states);
+	RUN(conker_wait_bounded);
+	RUN(conker_switch_off);
 }
