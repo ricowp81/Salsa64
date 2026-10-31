@@ -287,27 +287,44 @@ static void fixed_state(void)
 	g->state_valid = 1;
 }
 
-/* El alfa que queda en un destino con alfa (rsxkit_bound.alpha): 1 en cada
- * píxel escrito (la mezcla de alfa pasa a ONE / ZERO, que no mira el alfa
- * del fragmento), o el del fragmento con RSXKIT_DSTA_FRAG sin mezcla. Sin
- * alfa en el destino, el canal de alfa de la mezcla no cuenta. Las mezclas
- * con máximo o mínimo del alfa (ALPHA_MAX, REPLACE_MIN_ALPHA,
- * KEEP_MIN_ALPHA) traen su propia cuenta y no miran dst_alpha. */
+/* El alfa que queda en un destino con alfa (rsxkit_bound.alpha), según
+ * rsxkit_draw.dst_alpha y con cualquier mezcla del color: 1 (factor
+ * GCM_CONSTANT_ALPHA con el color de mezcla en alfa 1: un factor ONE / ZERO
+ * copia el alfa del fragmento, no da 1), el del fragmento (ONE / ZERO), el
+ * del destino (la máscara de color sin el alfa) o el mayor de los dos
+ * (ecuación MAX, que no mira los factores). Sin alfa en el destino, el
+ * canal de alfa de la mezcla no cuenta (ZERO / ONE). Las mezclas con
+ * máximo o mínimo del alfa (ALPHA_MAX, REPLACE_MIN_ALPHA, KEEP_MIN_ALPHA)
+ * traen su propia cuenta y no miran dst_alpha. */
 static void set_blend(uint8_t blend, uint8_t dsta)
 {
 	gcmContextData *ctx = rsxkit_g.ctx;
-	uint8_t key = (uint8_t)(blend | (dsta ? 0x10 : 0));
+	int alpha = rsxkit_bound.alpha;
+	if (!alpha || dsta > RSXKIT_DSTA_MAX)
+		dsta = RSXKIT_DSTA_ONE;  /* sin alfa no cuenta: una sola clave */
+	uint8_t key = (uint8_t)(blend | dsta << 5);
 	if (key == d3.blend)
 		return;
 	d3.blend = key;
-	int alpha = rsxkit_bound.alpha;
-	/* La ecuación del alfa: máximo o mínimo en las mezclas que lo piden y
-	 * suma en las demás (fixed_state la deja en suma). */
+	bool own = blend == RSXKIT_BLEND_ALPHA_MAX || blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA ||
+		   blend == RSXKIT_BLEND_KEEP_MIN_ALPHA;
+	/* Factores del canal alfa en las mezclas que no traen los suyos. */
+	u16 sa = GCM_ZERO, da = GCM_ONE;
+	if (alpha && dsta == RSXKIT_DSTA_FRAG) {
+		sa = GCM_ONE;
+		da = GCM_ZERO;
+	} else if (alpha && dsta == RSXKIT_DSTA_ONE) {
+		sa = GCM_CONSTANT_ALPHA;
+		da = GCM_ZERO;
+		rsxSetBlendColor(ctx, 0xFF000000u, 0);
+	}
+	/* La ecuación del alfa: máximo o mínimo en las mezclas que lo piden (y
+	 * con RSXKIT_DSTA_MAX) y suma en las demás (fixed_state la deja en suma). */
 	rsxSetBlendEquation(ctx, GCM_FUNC_ADD,
-			    blend == RSXKIT_BLEND_ALPHA_MAX ? GCM_FUNC_MAX
+			    blend == RSXKIT_BLEND_ALPHA_MAX || (!own && alpha && dsta == RSXKIT_DSTA_MAX) ? GCM_FUNC_MAX
 			    : (blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA || blend == RSXKIT_BLEND_KEEP_MIN_ALPHA)
-				      ? GCM_FUNC_MIN
-				      : GCM_FUNC_ADD);
+				    ? GCM_FUNC_MIN
+				    : GCM_FUNC_ADD);
 	u32 mask = GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A;
 	switch (blend) {
 	case RSXKIT_BLEND_REPLACE_MIN_ALPHA:
@@ -323,43 +340,45 @@ static void set_blend(uint8_t blend, uint8_t dsta)
 		break;
 	case RSXKIT_BLEND_ALPHA:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, alpha ? GCM_ONE : GCM_ZERO,
-				alpha ? GCM_ZERO : GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, sa, da);
 		break;
 	case RSXKIT_BLEND_ADD:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE, alpha ? GCM_ONE : GCM_ZERO, alpha ? GCM_ZERO : GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE, sa, da);
 		break;
 	case RSXKIT_BLEND_MUL:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_ZERO, GCM_SRC_ALPHA, alpha ? GCM_ONE : GCM_ZERO, alpha ? GCM_ZERO : GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_ZERO, GCM_SRC_ALPHA, sa, da);
 		break;
 	case RSXKIT_BLEND_ADD_MUL:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_ONE, GCM_SRC_ALPHA, alpha ? GCM_ONE : GCM_ZERO, alpha ? GCM_ZERO : GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_ONE, GCM_SRC_ALPHA, sa, da);
 		break;
 	case RSXKIT_BLEND_ALPHA_INV:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_ONE_MINUS_SRC_ALPHA, GCM_SRC_ALPHA, alpha ? GCM_ONE : GCM_ZERO,
-				alpha ? GCM_ZERO : GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_ONE_MINUS_SRC_ALPHA, GCM_SRC_ALPHA, sa, da);
 		break;
 	case RSXKIT_BLEND_ADD_ONE:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_ONE, GCM_ONE, alpha ? GCM_ONE : GCM_ZERO, alpha ? GCM_ZERO : GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_ONE, GCM_ONE, sa, da);
 		break;
 	case RSXKIT_BLEND_NONE:
 		rsxSetBlendEnable(ctx, GCM_FALSE);
 		mask = 0;
 		break;
 	default:
-		if (alpha && !dsta) {
+		/* Sin mezcla del color: la mezcla solo hace falta para el alfa 1 o
+		 * el mayor; el del fragmento y el del destino salen sin ella. */
+		if (alpha && (dsta == RSXKIT_DSTA_ONE || dsta == RSXKIT_DSTA_MAX)) {
 			rsxSetBlendEnable(ctx, GCM_TRUE);
-			rsxSetBlendFunc(ctx, GCM_ONE, GCM_ZERO, GCM_ONE, GCM_ZERO);
+			rsxSetBlendFunc(ctx, GCM_ONE, GCM_ZERO, sa, da);
 		} else {
 			rsxSetBlendEnable(ctx, GCM_FALSE);
 		}
 		break;
 	}
+	if (alpha && dsta == RSXKIT_DSTA_KEEP && !own)
+		mask &= ~(u32)GCM_COLOR_MASK_A;
 	rsxSetColorMask(ctx, mask);
 }
 

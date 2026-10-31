@@ -345,12 +345,11 @@ typedef struct rsxkit_depth rsxkit_depth;    /* profundidad Z24S8, memoria local
  * textura con transparencia: una imagen RGBA5551 de una consola de 16 bits).
  * Nace con alfa 0. Lo que lo escribe:
  *  - rsxkit_clear: el byte alto de `rgb` es el alfa;
- *  - rsxkit_draw: cada píxel escrito queda con alfa 1 (la mezcla de alfa
- *    del dibujo no toca el canal), o con el alfa del fragmento si
- *    rsxkit_draw.dst_alpha = RSXKIT_DSTA_FRAG y blend es RSXKIT_BLEND_OFF
- *    (relleno con un color de alfa 0/1, copias de textura sin mezcla); las
- *    mezclas RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA y _KEEP_MIN_ALPHA
- *    traen su propia cuenta del alfa (máximo o mínimo con el del destino);
+ *  - rsxkit_draw: lo que diga rsxkit_draw.dst_alpha en cada píxel escrito
+ *    (RSXKIT_DSTA_*: 1, el alfa del fragmento, el del destino sin cambiar o
+ *    el mayor de los dos), con cualquier mezcla del color; las mezclas
+ *    RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA y _KEEP_MIN_ALPHA traen su
+ *    propia cuenta del alfa (máximo o mínimo con el del destino);
  *  - rsxkit_target_fill / _fill_rows: el alfa de la imagen (el bit de alfa
  *    de RSXKIT_RGBA5551);
  *  - rsxkit_target_copy: se copia el alfa si el origen también lo tiene.
@@ -359,8 +358,9 @@ typedef struct rsxkit_depth rsxkit_depth;    /* profundidad Z24S8, memoria local
  * 2D, los blits y las pasadas de posprocesado lo leen solo de ARGB8888 (de
  * XRGB8888 toman 1). Sin alfa, la lectura trae lo que el RSX deje en el
  * byte alto de X8R8G8B8 (opaco).
- * Un destino con alfa mezcla en cada dibujo (ONE / ZERO en los opacos):
- * conviene para los que se leen como textura, no para el cuadro principal. */
+ * Un destino con alfa mezcla en los dibujos que dejan alfa 1 o el mayor
+ * (factor constante o ecuación MAX en el canal alfa): conviene para los que
+ * se leen como textura, no para el cuadro principal. */
 #define RSXKIT_TARGET_ALPHA 0x1u
 rsxkit_target *rsxkit_target_create(uint32_t width, uint32_t height);
 rsxkit_target *rsxkit_target_create_ex(uint32_t width, uint32_t height, uint32_t flags);
@@ -530,11 +530,17 @@ enum { RSXKIT_K_T0, RSXKIT_K_T0A, RSXKIT_K_T1, RSXKIT_K_T1A, RSXKIT_K_ONE, RSXKI
 #define RSXKIT_K_TERMS   RSXKIT_FP_MAX_TERMS
 #define RSXKIT_K_FACTORS RSXKIT_FP_MAX_FACTORS
 
-/* rsxkit_draw.dst_alpha, solo en destinos con RSXKIT_TARGET_ALPHA. No
- * cuenta con las mezclas que traen su propia cuenta del alfa
- * (RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA, _KEEP_MIN_ALPHA). */
-#define RSXKIT_DSTA_ONE  0  /* los píxeles escritos quedan con alfa 1 */
-#define RSXKIT_DSTA_FRAG 1  /* con blend OFF: el alfa del fragmento; con ALPHA o ADD, igual que ONE */
+/* rsxkit_draw.dst_alpha: el alfa que queda en cada píxel escrito de un
+ * destino con RSXKIT_TARGET_ALPHA, con cualquier mezcla del color (la del
+ * color no toca el alfa). No cuenta con las mezclas que traen su propia
+ * cuenta del alfa (RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA,
+ * _KEEP_MIN_ALPHA). Hasta 2026-10-31 RSXKIT_DSTA_ONE dejaba en realidad el
+ * alfa del fragmento (la mezcla de alfa ONE / ZERO lo copia): quien dependa
+ * de eso pasa a RSXKIT_DSTA_FRAG. */
+#define RSXKIT_DSTA_ONE  0  /* alfa 1 (factor de mezcla constante: el color de mezcla con alfa 1) */
+#define RSXKIT_DSTA_FRAG 1  /* el alfa del fragmento */
+#define RSXKIT_DSTA_KEEP 2  /* el del destino, sin cambiar (máscara de color sin el alfa) */
+#define RSXKIT_DSTA_MAX  3  /* el mayor entre el del fragmento y el del destino (ecuación MAX) */
 
 typedef struct rsxkit_draw {
 	/* Programa opcional: entradas de rsxkit_lincomb.vcg. NULL conserva la combinación. */
