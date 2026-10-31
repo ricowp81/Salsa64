@@ -6,6 +6,22 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
 
 ## [Unreleased]
 
+### Fixed
+- **Dr. Mario 64: white panels in the game background (#62, regression of
+  0.2.15).** In a 16-bit color image the RDP stores the pixel coverage in the
+  RGBA5551 alpha bit, not the blender alpha: 1 for almost every mode (CLAMP and
+  ZAP), the old bit for WRAP/SAVE with image read, the texel bit in COPY and the
+  fill color bit in FILL. The RSX render-to-texture targets kept the fragment
+  alpha instead (rsxkit's "alpha 1" blend mode actually copied it), and since
+  0.2.15 that alpha reaches RDRAM copies: Dr. Mario 64 draws its translucent
+  panels into a 328 × 240 background image with alpha 0.375 and pastes it with
+  an alpha test every frame, so the score box, the bottle interior, Dr. Mario's
+  box and the level/speed boxes came out white (with the falling pill's trail
+  inside the bottle). The targets now get the RDP's bit (checked against ares:
+  identical bits in the whole image). The flag file `alfa-fragmento` in
+  `/dev_hdd0/salsa64/` restores the 0.2.15 behaviour; `copia-sin-alfa` still
+  works as before.
+
 ## [0.2.15] — 2026-10-29
 
 ### Changed

@@ -1,5 +1,59 @@
 # Estado
 
+## 2026-10-31 — #62, Dr. Mario 64: paneles en blanco (el bit de alfa es la cobertura)
+
+- Reporte (v0.2.15, fotos en la PS3): en la partida salen en blanco el interior del frasco, el
+  marcador (TOP/SCORE/TIME), el recuadro de Dr. Mario y «MED», con una mancha oscura y una raya
+  roja que tiembla en el frasco; con `copia-sin-alfa` todo bien; en la v0.2.14 también.
+- Datos (traza de la HLE y volcados del host): al entrar a la partida (y a la demostración que
+  sale sola tras el título) el juego dibuja una vez el fondo en una imagen de 328 × 240
+  (`214e00`): fichas CI8 en ciclo 1 (CLAMP, FORCE_BL) y encima los paneles translúcidos en XLU
+  (othermode L `0c184240` y `00504241`: CVG_DST_FULL, FORCE_BL, IM_RD) con el alfa de una máscara
+  I4 o el del primitivo, 0,375. En cada cuadro la pega en COPY con prueba de alfa (tiras de
+  328 × 6) leyéndola de la RDRAM (destino viejo).
+- Causa: en una imagen de 16 bits el RDP guarda en el bit de alfa la cobertura, no el alfa de la
+  mezcla (ZAP: 7, el bit en 1). El RSX guardaba el alfa del fragmento: `RSXKIT_DSTA_ONE` ponía la
+  mezcla del canal alfa en ONE / ZERO, que lo copia (el «alfa 1» de 1d30178 nunca fue tal). Desde
+  la v0.2.15 ese alfa llega a la copia (49063599): los paneles quedaban con el bit en 0, la copia
+  COPY los descartaba y se veía lo que había debajo (blanco, y en el frasco la estela de la
+  píldora). El host no lo reproducía por dos diferencias con la PS3: suponía alfa 1 y no copiaba a
+  la RDRAM imágenes de otro ancho que el VI de más de 64 KB (el fondo salía de la RDRAM sin
+  dibujar).
+- ares (demostración, volcado en la RDRAM): `214e00` con el bit en 1 en las 76 800 posiciones
+  dibujadas. El host con el arreglo: idéntico bit a bit (9 píxeles con el color a más de 2 pasos);
+  con el alfa del fragmento (la v0.2.15), 19 789 en 0 (los paneles).
+- Arreglo: la HLE calcula el bit por dibujo (`gfx_draw.cvg_bit`, en el relleno de `prim_tile`,
+  que pasa a 16 bits: el tamaño del dibujo no cambia): 1 en CLAMP y ZAP, el de la memoria en WRAP
+  y SAVE con IM_RD, el del alfa con CVG_X_ALPHA sin FORCE_BL, el mayor con CVG_X_ALPHA, FORCE_BL
+  e IM_RD; el texel en COPY y el color en FILL (docs/framebuffer.md). rsxkit: `RSXKIT_DSTA_ONE`
+  da 1 de verdad (factor `GCM_CONSTANT_ALPHA` con el color de mezcla en alfa 1) y hay
+  `RSXKIT_DSTA_KEEP` (máscara sin el alfa) y `RSXKIT_DSTA_MAX` (ecuación MAX). `src/rdp/rdp.c`
+  los usa; interruptor `alfa-fragmento` (todo con el alfa del fragmento, como la v0.2.15); el log
+  de cada 5 s cuenta los dibujos por modo. Host: lo mismo (`SALSA64_ALFA_FRAGMENTO=1`) y copia
+  las imágenes grandes de otro ancho como la PS3.
+- `salsa64-run --ares` compara además el bit de alfa con el de la consola
+  (`SALSA64_ALFA_EN_TODAS=1` en todas las de 16 bits). En 12 volcados de ares (Dr. Mario 64,
+  LEGO Racers, Star Fox 64, Conker, Hydro Thunder, GoldenEye, Super Odyssey 64, Snap) la
+  cobertura acierta 94–100 % de los píxeles y el alfa del fragmento 3–100 % (GoldenEye 3 %);
+  lo que queda son bordes con cobertura parcial (el RSX no la tiene).
+- Verificado en el host: Dr. Mario 64 en la demostración y en una partida clásica (pad desde el
+  título) sin paneles en blanco; con `SALSA64_ALFA_FRAGMENTO=1` salen como en las fotos de la
+  PS3, con la mancha y la raya roja en el frasco (la estela de la píldora: el fondo transparente
+  deja ver los cuadros anteriores). LEGO Racers: en el volcado de ares de la carrera el bit de
+  las imágenes de los autos (32 × 32) coincide en 997 de 1023 píxeles (los otros, bordes) y el
+  cuadro (`--pasadas 2`) da lo mismo que main (32,31 dB en 4×4); `raster_alpha_copy` pasa.
+  De 20 escenas del host (las 9 de `tools/escenas-host.sh`, F-Zero X en dos, Worms, Mario
+  Tennis, Paper Mario, Smash, Snap, Conker, LEGO Racers y el título y la demostración de Dr.
+  Mario), 19 idénticas a main; cambia la demostración de Dr. Mario (en main el host no copiaba su
+  fondo y salía ruido). Con el alfa del fragmento las mismas 19 siguen idénticas: en lo medido,
+  lo único que cambia en la PS3 respecto de la v0.2.15 es Dr. Mario. 821 pruebas unitarias sin fallos (nuevas
+  `gfx_cvg_bit` y `raster_alpha_cvg`). Pila de los SPE: holgura 2304 / 2544 / 14448 / 3328 /
+  2032 / 4656 / 2704 (32 bytes más de cadena y ~128 de código por imagen; mínimo 1536).
+- Falta la PS3: que los paneles salgan bien (el factor constante del RSX tiene que dar alfa 1),
+  que LEGO Racers siga sin el cuadro y que no cambie nada visible en los juegos con render a
+  textura (Mario Tennis, logos de Rogue Squadron). Aparte, las píldoras que no se ven mientras
+  caen (otro trabajo).
+
 ## 2026-10-29 — Pila del SPE 0 tras unir F-Zero X afín y Vigilante 8 (rama pila-spe0)
 
 - Con las dos ramas unidas (main 19f4cfa) el paquete no se armaba: holgura 800 / 1024 / 12944 /

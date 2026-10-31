@@ -250,6 +250,42 @@ static uint8_t classify_blend(const struct gfx_state *g, unsigned p, unsigned a,
 	return GFX_BLEND_ALPHA;                       /* IN·α + MEM·(1 − α) y parecidos */
 }
 
+/* El bit de alfa que el RDP deja en una color image de 16 bits en los
+ * ciclos 1 y 2 (gfx_draw.cvg_bit). No es el alfa de la mezcla: es la
+ * cobertura del píxel, 3 bits con el alto en el bit de alfa de RGBA5551 y
+ * los otros dos en los bits ocultos de la RDRAM. Con el píxel cubierto
+ * entero (cvg = 8; el RSX solo mira el centro) y mem la cobertura que lee
+ * de la memoria (7 sin IM_RD: no la lee), según CVG_DST:
+ *  - CLAMP: cvg − 1 sin mezcla, o cvg + mem con ella, hasta 7: el bit en 1;
+ *  - WRAP: (cvg + mem) & 7 = mem;
+ *  - FULL («ZAP»): 7;
+ *  - SAVE: mem.
+ * Con CVG_X_ALPHA la cobertura es cvg·α (α >> 5 con el píxel entero) y en
+ * CLAMP el bit sale del alfa: sin FORCE_BL, α >> 5 − 1 (en 1 desde α = 160;
+ * desde 128 sobre memoria en 0, con la mezcla del AA); con FORCE_BL,
+ * α >> 5 + mem, que sin IM_RD es siempre 7 y con IM_RD da 1 si la memoria
+ * ya estaba en 1 o desde α = 128. En WRAP y SAVE con CVG_X_ALPHA se toma la
+ * memoria, como sin él. Medido contra ares: Dr. Mario 64 dibuja los paneles
+ * translúcidos de su fondo (ZAP, FORCE_BL, IM_RD) con alfa 0,375 o el de una
+ * máscara y la consola deja el bit en 1 (#62; docs/framebuffer.md). */
+static uint8_t cvg_bit(uint32_t ol)
+{
+	bool im_rd = (ol & IM_RD) != 0;
+	switch (ol & CVG_DST_MASK) {
+	case CVG_DST_WRAP:
+	case CVG_DST_SAVE:
+		return im_rd ? GFX_CVG_KEEP : GFX_CVG_ONE;
+	case CVG_DST_FULL:
+		return GFX_CVG_ONE;
+	default:
+		if (!(ol & CVG_X_ALPHA))
+			return GFX_CVG_ONE;
+		if (ol & FORCE_BL)
+			return im_rd ? GFX_CVG_MAX : GFX_CVG_ONE;
+		return GFX_CVG_ALPHA;
+	}
+}
+
 static void blend_state(const struct gfx_state *g, struct gfx_draw *d)
 {
 	uint32_t ol = g->ol;
@@ -279,6 +315,7 @@ static void blend_state(const struct gfx_state *g, struct gfx_draw *d)
 	}
 
 	d->blend = !(ol & FORCE_BL) ? GFX_BLEND_OFF : classify_blend(g, p, a, m, b, g->fog);
+	d->cvg_bit = cvg_bit(ol);
 	/* G_RM_VISCVG: IM_RD | FORCE_BL y el blender IN·0 + BL·A_MEM. */
 	if ((ol & (IM_RD | FORCE_BL)) == (IM_RD | FORCE_BL) && p == BL_IN && a == BA_ZERO && m == BL_BL && b == BB_MEM)
 		d->viscvg = 1;
@@ -543,11 +580,13 @@ static void build_state(struct gfx_state *g, struct gfx_draw *d, enum prim_kind 
 		 * necesita (rsxkit_draw.dst_alpha). Sin prueba de alfa en un relleno. */
 		d->aref = c[3];
 		d->cycle = G_CYC_FILL;
+		d->cvg_bit = GFX_CVG_ALPHA;  /* el bit del color de relleno */
 		return;
 	}
 	if (d->cycle == G_CYC_COPY) {
 		for (int lane = 0; lane < 4; lane++)
 			d->k[GFX_K_T0][0][lane] = 1.0f;
+		d->cvg_bit = GFX_CVG_ALPHA;  /* el RDP copia los 16 bits del texel */
 		d->ntex = 1;
 		if (!texture_state(g, d, tile, 0, true, g->rect_clamp & 3u, g->rect_lim))
 			d->ntex = 0;
@@ -685,7 +724,7 @@ static struct gfx_vertex *begin_prim(struct gfx_state *g, enum prim_kind kind, i
 		g->res->t_state += gfx_io_clock() - t0;
 		GFX_DETAIL(g, g->detail->state_builds++);
 		d.prim_kind = kind;
-		d.prim_tile = (uint32_t)tile;
+		d.prim_tile = (uint16_t)tile;
 		g->dirty = false;
 		/* Mismo estado que el dibujo abierto: se continúa. Con la z del
 		 * primitivo, también la misma z: el consumidor da una sola a

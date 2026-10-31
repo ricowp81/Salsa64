@@ -10,6 +10,12 @@ el [radar de compatibilidad](compatibilidad/index.html). Sus datos están en
 
 Las entradas antiguas conservan sus métodos de prueba como historia.
 
+## 2026-10-31 — Reporte #62 (Dr. Mario 64)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| Dr. Mario 64 | paneles del fondo de la partida y de la demostración otra vez bien en el host, con el bit de alfa idéntico a ares (falta la PS3) | regresión de la v0.2.15: los destinos de render a textura guardaban el alfa del fragmento y no la cobertura del RDP; `alfa-fragmento` vuelve a lo de la v0.2.15. Las píldoras que no se ven mientras caen son otro problema, anterior |
+
 ## 2026-10-29 — Vigilante 8: 2nd Offense (blender)
 
 | Juego | Estado | Notas |

@@ -3714,6 +3714,9 @@ static void stats(uint64_t now)
 		uint32_t talpha = rs.targets_alpha - sw.rdp0.targets_alpha, xalpha = rs.tex_alpha - sw.rdp0.tex_alpha;
 		uint32_t falpha = rs.alpha_fills - sw.rdp0.alpha_fills;
 		uint32_t calpha = rs.alpha_copies - sw.rdp0.alpha_copies;
+		uint32_t cvg[4];
+		for (int k = 0; k < 4; k++)
+			cvg[k] = rs.alpha_cvg[k] - sw.rdp0.alpha_cvg[k];
 		if (rb || rbw || mir || mirs || fmir || dmas || trsx || trd || tself || primes || lost || tfail || tabs ||
 		    bfail || tppe || tppel)
 			salsa64_log("gfx: framebuffer: %u copias a la RDRAM (%.2f ms c/u en presentación), la emulación "
@@ -3726,10 +3729,12 @@ static void stats(uint64_t now)
 				    rbw ? (rs.us_readback_wait - sw.rdp0.us_readback_wait) / 1e3 / rbw : 0.0,
 				    rs.readback_late - sw.rdp0.readback_late, mir, mirs, fmir, dmas, trsx, trd, tself, tppe,
 				    tppel, primes, pwaits, lost, tfail, tabs, bfail);
-		if (talpha || xalpha || falpha || calpha)
+		if (talpha || xalpha || falpha || calpha || cvg[0] || cvg[1] || cvg[2] || cvg[3])
 			salsa64_log("gfx: alfa en los destinos: %u destinos con alfa creados, %u texturas leídas de uno "
-				    "de ellos, %u rellenos o copias con su alfa, %u copias a la RDRAM con su alfa",
-				    talpha, xalpha, falpha, calpha);
+				    "de ellos, %u rellenos o copias con su alfa, %u copias a la RDRAM con su alfa; "
+				    "cobertura de los dibujos: %u con alfa 1, %u con el de la memoria, %u con el del "
+				    "fragmento, %u con el mayor",
+				    talpha, xalpha, falpha, calpha, cvg[0], cvg[1], cvg[2], cvg[3]);
 		if (rs.big8_sync != sw.rdp0.big8_sync || rs.big8_nosync != sw.rdp0.big8_nosync ||
 		    rs.big8_primes != sw.rdp0.big8_primes)
 			salsa64_log("gfx: copias big8: %u esperadas, %u sin esperar; %u hechas, cambiaron %u píxeles de la "
@@ -5907,6 +5912,16 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 		salsa64_rdp_set_copy_alpha(copy_alpha);
 		if (!copy_alpha)
 			salsa64_log("gfx: copias a la RDRAM de los destinos con alfa sin su alfa (copia-sin-alfa)");
+	}
+	/* Los dibujos dejan en los destinos con alfa la cobertura del RDP, no el
+	 * alfa de la mezcla; `alfa-fragmento` vuelve al alfa del fragmento, como
+	 * hasta la v0.2.15 (Dr. Mario 64, #62). */
+	{
+		bool cvg_alpha = !file_exists(SALSA64_DATA_DIR "/alfa-fragmento");
+		salsa64_rdp_set_cvg_alpha(cvg_alpha);
+		if (!cvg_alpha)
+			salsa64_log("gfx: los destinos con alfa guardan el alfa del fragmento, como la v0.2.15 "
+				    "(alfa-fragmento)");
 	}
 	/* Las imágenes chicas de 32 bits (la luz de los cuartos oscuros de Paper
 	 * Mario) las dibuja el PPE en la RDRAM; `gfx-mascara32-rsx` las deja en
