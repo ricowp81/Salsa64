@@ -7,6 +7,18 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
 ## [Unreleased]
 
 ### Fixed
+- **Conker's Bad Fur Day (USA): the Great Mighty Poo did not open his mouth and
+  Sweet Melody got stuck when entered straight from the Chapters menu** (#3).
+  The game's music manager starts a song by sending PLAY to the sequence
+  player and, on every game frame, treats a stopped player as a finished song
+  and drops its record. With the emulated CPU (faster than the real one) the
+  next game frame could arrive before the audio thread had processed the PLAY:
+  the record of the cave song was dropped, the song played without it, and the
+  markers that drive the Poo's mouth and the scene were lost. The emulator now
+  patches the game's PLAY routine in RAM, only when the original code is there,
+  so it waits for the audio thread to start the player (as the game already
+  does when it stops one). Only the USA retail ROM is affected; the file
+  `conker-musica-vieja` in `/dev_hdd0/salsa64/` turns the patch off.
 - **Donkey Kong 64 (USA): the DK Rap intro had no music, and it came in about
   1.5 minutes late and out of sync with the lyrics** (#51). The game's music
   manager starts a song and, on the next game frame, expects the audio thread

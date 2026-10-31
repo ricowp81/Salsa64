@@ -45,6 +45,32 @@
  * 0x806029DC–0x80602A28: como el «or a0, s1» de la carga se mueve a la
  * ranura del primer salto, s1 deja de usarse y las dos llamadas toman a0
  * de s4 (s1 = s4 en el original).
+ *
+ * Conker's Bad Fur Day (USA, NFUE), el Great Mighty Poo sin abrir la boca
+ * (issue #3). El código del juego va por la TLB en 0x10000000, que apunta a
+ * la RDRAM física 0: el pc 0x1000xxxx es la física 0x0000xxxx. El gestor de
+ * música (0x1000D2F8, una vez por cuadro y por canal, hilo 3) lleva por canal
+ * un registro de la canción (raíces en 0x800417B0). Para cambiar de canción
+ * para la que suena (0x10008CE8: STOP y espera activa a que el hilo de audio,
+ * el 4, deje el reproductor parado), pone el registro nuevo, carga y manda
+ * PLAY (0x100084D8 → 0x10017AA0, un evento en la cola del reproductor que
+ * el hilo de audio procesa en su siguiente cuadro, cada 2 campos). En cada
+ * cuadro, si ve el reproductor parado (estado en +0x2C igual a 0), da la
+ * canción por terminada y borra su registro. Con nuestro CPU el cuadro
+ * siguiente del juego puede llegar antes que el cuadro de audio: el gestor ve
+ * parado un reproductor al que acaba de mandar PLAY, borra el registro y la
+ * canción suena sin él: el gestor ya no la atiende y el Poo no abre la boca
+ * (la escena espera). En el host, entrando a Sweet Melody desde Chapters:
+ * PLAY en el campo 13150, registro borrado en el 13151 y PLAY procesado en el
+ * 13152 (la canción de la cueva queda huérfana); en el jefe, PLAY en el
+ * 16952, borrado en el 16953, procesado en el 16954. Con 2 ciclos por
+ * instrucción (-DSALSA64_CPI=2) el mismo recorrido funciona.
+ *
+ * El arreglo reescribe la función que manda PLAY (0x100084D8, 25 palabras):
+ * hace lo mismo (PLAY si el reproductor está parado o en pausa) y, después de
+ * mandarlo, espera a que el estado deje de ser 0, como ya espera el STOP en
+ * 0x10008CE8 (tope de 0x1E0000 vueltas, unos 6 campos). El estado se lee
+ * directo (+0x2C), que es lo que hace 0x10017A80.
  */
 #include "core/gamefix.h"
 
@@ -59,8 +85,8 @@ struct gamefix {
 	uint32_t crc1, crc2;  /* encabezado 0x10 y 0x14 */
 	uint32_t pa;        /* dirección física del código */
 	unsigned n;         /* palabras */
-	uint32_t orig[20];
-	uint32_t fix[20];
+	uint32_t orig[25];
+	uint32_t fix[25];
 };
 
 static const struct gamefix fixes[] = {
@@ -141,6 +167,65 @@ static const struct gamefix fixes[] = {
 			0x026B6021u,  /* addu  t4, s3, t3 */
 			0x8D860000u,  /* lw    a2, 0(t4) */
 			0x02802025u,  /* or    a0, s4, zero */
+		},
+	},
+	{
+		"Conker's Bad Fur Day (USA): el PLAY de una canción espera a que el hilo de audio lo procese",
+		"conker-musica-vieja",
+		{ 'N', 'F', 'U', 'E' }, 0x30C7AC50u, 0x7704072Du, 0x000084D8u, 25,
+		{
+			0x27BDFFE0u,  /* addiu sp, sp, -32 */
+			0xAFBF0014u,  /* sw    ra, 20(sp) */
+			0xAFA40020u,  /* sw    a0, 32(sp) */
+			0x308500FFu,  /* andi  a1, a0, 0xff         reproductor */
+			0x3C0F8004u,  /* lui   t7, 0x8004 */
+			0x25EFC900u,  /* addiu t7, t7, -0x3700      tabla de reproductores (0x8003C900) */
+			0x00057080u,  /* sll   t6, a1, 2 */
+			0x01CF1021u,  /* addu  v0, t6, t7 */
+			0x8C440000u,  /* lw    a0, 0(v0) */
+			0x0C005EA0u,  /* jal   0x10017a80           estado */
+			0xAFA2001Cu,  /* sw    v0, 28(sp) */
+			0x10400006u,  /* beq   v0, zero, play       parado: PLAY */
+			0x8FB8001Cu,  /* lw    t8, 28(sp) */
+			0x0C005EA0u,  /* jal   0x10017a80 */
+			0x8F040000u,  /* lw    a0, 0(t8) */
+			0x24010003u,  /* addiu at, zero, 3 */
+			0x54410005u,  /* bnel  v0, at, salida       solo PLAY si está en pausa (3) */
+			0x8FBF0014u,  /* lw    ra, 20(sp) */
+			0x8FB9001Cu,  /* play: lw t9, 28(sp) */
+			0x0C005EA8u,  /* jal   0x10017aa0           PLAY (evento 0x0F a su cola) */
+			0x8F240000u,  /* lw    a0, 0(t9) */
+			0x8FBF0014u,  /* lw    ra, 20(sp) */
+			0x27BD0020u,  /* salida: addiu sp, sp, 32 */
+			0x03E00008u,  /* jr    ra */
+			0x00000000u,  /* nop */
+		},
+		{
+			0x27BDFFE0u,  /* addiu sp, sp, -32 */
+			0xAFBF0014u,  /* sw    ra, 20(sp) */
+			0x308500FFu,  /* andi  a1, a0, 0xff */
+			0x3C0F8004u,  /* lui   t7, 0x8004 */
+			0x25EFC900u,  /* addiu t7, t7, -0x3700 */
+			0x00057080u,  /* sll   t6, a1, 2 */
+			0x01CF1021u,  /* addu  v0, t6, t7 */
+			0x8C440000u,  /* lw    a0, 0(v0)            reproductor */
+			0x8C82002Cu,  /* lw    v0, 0x2C(a0)         estado (lo mismo que 0x10017a80) */
+			0x10400003u,  /* beq   v0, zero, play */
+			0x24010003u,  /* addiu at, zero, 3 */
+			0x14410009u,  /* bne   v0, at, salida */
+			0x00000000u,  /* nop */
+			0x0C005EA8u,  /* play: jal 0x10017aa0 */
+			0xAFA4001Cu,  /* sw    a0, 28(sp) */
+			0x8FA4001Cu,  /* lw    a0, 28(sp) */
+			0x3C01001Eu,  /* lui   at, 0x1E             tope: 0x1E0000 vueltas */
+			0x8C82002Cu,  /* espera: lw v0, 0x2C(a0) */
+			0x14400002u,  /* bne   v0, zero, salida     el hilo de audio ya lo procesó */
+			0x2421FFFFu,  /* addiu at, at, -1 */
+			0x1C20FFFCu,  /* bgtz  at, espera */
+			0x8FBF0014u,  /* salida: lw ra, 20(sp) */
+			0x03E00008u,  /* jr    ra */
+			0x27BD0020u,  /* addiu sp, sp, 32 */
+			0x00000000u,  /* nop */
 		},
 	},
 };
