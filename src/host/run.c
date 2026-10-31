@@ -1258,8 +1258,118 @@ static struct {
 } watch_fb[RDP_TARGETS_MAX];
 static uint32_t watch_lo = ~0u, watch_hi;
 
+/* Vigía de la RDRAM (mismo build): SALSA64_VIGIA=pa[+bytes][r],… (hexadecimal,
+ * física) imprime cada escritura del CPU en esos rangos con el campo, el
+ * ciclo, el pc, el hilo de libultra que corre y la palabra antes y después;
+ * con «r», también las lecturas. SALSA64_VIGIA_HILO=pa de __osRunningThread
+ * para el número de hilo (id en +0x14). SALSA64_VIGIA_DESDE=campo. */
+#define VIGIA_MAX 16
+static struct { uint32_t lo, hi; bool reads; } vigia[VIGIA_MAX];
+static unsigned vigia_n, vigia_from;
+/* SALSA64_VIGIA_PC=pa,…: cada vez que el CPU ejecuta esas instrucciones
+ * (dirección física), con a0–a3, v0, v1, s0, s1 y ra. */
+static uint32_t vigia_pc_list[VIGIA_MAX];
+static unsigned vigia_pc_n;
+static uint32_t vigia_thread_pa = ~0u;
+static bool vigia_pending;
+static uint32_t vigia_pa, vigia_old, vigia_tid;
+static uint64_t vigia_pc, vigia_cyc;
+
+static void vigia_setup(void)
+{
+	const char *s = getenv("SALSA64_VIGIA");
+	if (getenv("SALSA64_VIGIA_HILO"))
+		vigia_thread_pa = (uint32_t)strtoul(getenv("SALSA64_VIGIA_HILO"), NULL, 16) & 0x1FFFFFFFu;
+	if (getenv("SALSA64_VIGIA_DESDE"))
+		vigia_from = (unsigned)strtoul(getenv("SALSA64_VIGIA_DESDE"), NULL, 0);
+	for (const char *p = getenv("SALSA64_VIGIA_PC"); p && *p && vigia_pc_n < VIGIA_MAX;) {
+		char *e;
+		vigia_pc_list[vigia_pc_n++] = (uint32_t)strtoul(p, &e, 16) & 0x1FFFFFFFu;
+		if (e == p)
+			break;
+		p = *e == ',' ? e + 1 : e;
+	}
+	while (s && *s && vigia_n < VIGIA_MAX) {
+		char *e;
+		uint32_t lo = (uint32_t)strtoul(s, &e, 16) & 0x1FFFFFFFu, len = 4;
+		if (*e == '+')
+			len = (uint32_t)strtoul(e + 1, &e, 16);
+		bool rd = *e == 'r';
+		if (rd)
+			e++;
+		vigia[vigia_n].lo = lo;
+		vigia[vigia_n].hi = lo + len;
+		vigia[vigia_n].reads = rd;
+		vigia_n++;
+		s = *e == ',' ? e + 1 : e;
+		if (e == s && *s != '\0' && *s != ',')
+			break;
+	}
+}
+
+static uint32_t vigia_word(uint32_t pa)
+{
+	return pa + 4 <= n64.bus.rdram_size ? salsa64_rd32(n64.bus.rdram + pa) : 0;
+}
+
+static uint32_t vigia_thread(void)
+{
+	if (vigia_thread_pa == ~0u)
+		return 0;
+	uint32_t t = vigia_word(vigia_thread_pa) & 0x1FFFFFFFu;
+	return t ? vigia_word(t + 0x14) : 0;
+}
+
+static void vigia_flush(void)
+{
+	if (!vigia_pending)
+		return;
+	vigia_pending = false;
+	fprintf(stderr, "vigía: campo %u ciclo %llu pc %08llx hilo %u: E %06x %08x -> %08x\n", n64.bus.vi.fields,
+		(unsigned long long)vigia_cyc, (unsigned long long)(vigia_pc & 0xFFFFFFFFu), vigia_tid, vigia_pa,
+		vigia_old, vigia_word(vigia_pa));
+}
+
+static void vigia_access(uint32_t pa, int write)
+{
+	vigia_flush();
+	if (n64.bus.vi.fields < vigia_from)
+		return;
+	if (!write && ((uint32_t)n64.cpu.cur_pc & 0xFFFu) == (pa & 0xFFFu))
+		for (unsigned i = 0; i < vigia_pc_n; i++) {
+			if (pa != vigia_pc_list[i])
+				continue;
+			const uint64_t *g = n64.cpu.gpr;
+			fprintf(stderr, "vigía: campo %u ciclo %llu pc %08llx hilo %u: X a0 %08x a1 %08x a2 %08x a3 %08x "
+				"v0 %08x v1 %08x s0 %08x s1 %08x ra %08x\n", n64.bus.vi.fields,
+				(unsigned long long)n64.cpu.cycles, (unsigned long long)(n64.cpu.cur_pc & 0xFFFFFFFFu),
+				vigia_thread(), (uint32_t)g[4], (uint32_t)g[5], (uint32_t)g[6], (uint32_t)g[7],
+				(uint32_t)g[2], (uint32_t)g[3], (uint32_t)g[16], (uint32_t)g[17], (uint32_t)g[31]);
+			return;
+		}
+	for (unsigned i = 0; i < vigia_n; i++) {
+		if (pa < vigia[i].lo || pa >= vigia[i].hi)
+			continue;
+		if (write) {
+			vigia_pending = true;
+			vigia_pa = pa & ~3u;
+			vigia_old = vigia_word(vigia_pa);
+			vigia_pc = n64.cpu.cur_pc;
+			vigia_cyc = n64.cpu.cycles;
+			vigia_tid = vigia_thread();
+		} else if (vigia[i].reads) {
+			fprintf(stderr, "vigía: campo %u ciclo %llu pc %08llx hilo %u: L %06x %08x\n", n64.bus.vi.fields,
+				(unsigned long long)n64.cpu.cycles, (unsigned long long)(n64.cpu.cur_pc & 0xFFFFFFFFu),
+				vigia_thread(), pa & ~3u, vigia_word(pa & ~3u));
+		}
+		return;
+	}
+}
+
 void salsa64_watch_access(uint32_t pa, int write)
 {
+	if (vigia_n || vigia_pc_n)
+		vigia_access(pa, write);
 	if (pa < watch_lo || pa >= watch_hi)
 		return;
 	for (int i = 0; i < RDP_TARGETS_MAX; i++) {
@@ -3469,6 +3579,15 @@ static void dump_regs(void)
 		fprintf(stderr, " %08x", salsa64_rd32(b->pif_ram + i));
 	fprintf(stderr, "\nSI status=%x dram=%08x\n", salsa64_si_read(b, SALSA64_SI_STATUS << 2),
 		b->si[SALSA64_SI_DRAM_ADDR]);
+	/* Las entradas válidas del TLB: para llevar el pc de un juego con código
+	 * en el TLB (Conker, GoldenEye) a la RDRAM. */
+	for (int k = 0; k < SALSA64_TLB_ENTRIES; k++) {
+		const struct salsa64_tlb_entry *t = &cpu->tlb[k];
+		if (!((t->entry_lo[0] | t->entry_lo[1]) & 2))
+			continue;
+		fprintf(stderr, "TLB %2d: hi=%016llx mask=%08x lo0=%08x lo1=%08x%s\n", k, (unsigned long long)t->entry_hi,
+			t->page_mask, t->entry_lo[0], t->entry_lo[1], t->global ? " G" : "");
+	}
 #ifdef SALSA64_DEBUG_SPMEM
 	extern unsigned salsa64_debug_irq[6];
 	fprintf(stderr, "interrupciones: SP %u SI %u AI %u VI %u PI %u DP %u\n", salsa64_debug_irq[0],
@@ -4124,6 +4243,9 @@ int main(int argc, char **argv)
 	else
 		salsa64_bus_set_rom(&n64.bus, rom, (uint32_t)(rom_size > UINT32_MAX ? UINT32_MAX : rom_size));
 	gamefix_env(&n64.bus);
+#ifdef SALSA64_WATCH_MEM
+	vigia_setup();
+#endif
 	struct salsa64_boot_info info;
 	if (!salsa64_boot_hle(&n64, tv, &info)) {
 		fprintf(stderr, "salsa64-run: no se pudo arrancar %s: %s\n", path, info.error);
