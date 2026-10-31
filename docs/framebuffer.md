@@ -291,6 +291,51 @@ vuelve a la copia en RGB565. El host (`src/host/raster.c`) lleva el mismo
 alfa en el byte alto de cada imagen (`SALSA64_SIN_ALFA_DESTINOS`,
 `SALSA64_COPIA_SIN_ALFA`).
 
+**El bit de alfa es la cobertura (2026-10-31, #62).** En una color image de
+16 bits el RDP no guarda en el bit de alfa de RGBA5551 el alfa de la mezcla:
+guarda la cobertura del píxel (3 bits: el alto ahí, los otros dos en los
+bits ocultos de la RDRAM). En FILL escribe el color de relleno tal cual (su
+bit) y en COPY los 16 bits del texel. En los ciclos 1 y 2, con el píxel
+cubierto entero (el RSX no tiene cobertura parcial; `mem` es la cobertura
+que lee de la memoria, 7 sin IM_RD), según CVG_DST:
+
+| CVG_DST | cobertura escrita | bit (`gfx_draw.cvg_bit`) |
+|---|---|---|
+| CLAMP | cvg − 1 sin mezcla, cvg + mem con ella, hasta 7 | 1 (`GFX_CVG_ONE`) |
+| WRAP | (cvg + mem) & 7 = mem | el de la memoria con IM_RD (`GFX_CVG_KEEP`); 1 sin IM_RD |
+| FULL («ZAP») | 7 | 1 |
+| SAVE | mem | como WRAP |
+
+Con CVG_X_ALPHA la cobertura es cvg·α (α >> 5 con el píxel entero) y en
+CLAMP el bit sale del alfa: sin FORCE_BL, del alfa del fragmento
+(`GFX_CVG_ALPHA`: en 1 desde α = 160, o 128 sobre memoria en 0; el RSX corta
+en 128); con FORCE_BL e IM_RD, 1 si la memoria ya lo tenía o desde α = 128
+(`GFX_CVG_MAX`); con FORCE_BL sin IM_RD, siempre 1. Lo calcula la HLE
+(`src/rsp/gfx/rdp.c`, `cvg_bit`); `src/rdp/rdp.c` lo pasa a
+`rsxkit_draw.dst_alpha` (`RSXKIT_DSTA_ONE`, `_KEEP`, `_FRAG`, `_MAX`) y el
+host (`src/host/raster.c`) hace lo mismo.
+
+Hasta la v0.2.15 los dibujos dejaban en el RSX el alfa del fragmento:
+`RSXKIT_DSTA_ONE` ponía la mezcla del canal alfa en ONE / ZERO, que copia el
+del fragmento en vez de dar 1, y el host suponía 1. Con las copias con alfa
+de la v0.2.15 eso llegó a la RDRAM: Dr. Mario 64 dibuja una vez el fondo de
+la partida en una imagen de 328 × 240 (`214e00`), con los paneles
+translúcidos (marcador, frasco, el recuadro de Dr. Mario, VIRUS LEVEL, SPEED,
+VIRUSES) en XLU (ZAP, FORCE_BL, IM_RD) con alfa 0,375 o el de una máscara
+I4, y en cada cuadro la pega en COPY con prueba de alfa leyéndola de la
+RDRAM. Con el bit en 0 los paneles se descartaban: salían en blanco y, en el
+frasco, con la estela de la píldora que cae. En la RDRAM de ares esa imagen
+tiene el bit en 1 en las 76 800 posiciones dibujadas; el host da lo mismo
+(antes, 19 789 en 0). `alfa-fragmento` (`SALSA64_ALFA_FRAGMENTO=1` en el host)
+vuelve al alfa del fragmento.
+
+El host tampoco copiaba a la RDRAM una imagen de 16 bits de otro ancho que
+el VI que no cabe en un espejo (64 KB), y la PS3 sí (`readbacks_wanted`):
+ahora la copia como la PS3 (el fondo de Dr. Mario salía de la RDRAM sin
+dibujar). `salsa64-run --ares` compara además el bit de alfa de las imágenes
+que lo llevan con el de la consola (`SALSA64_ALFA_EN_TODAS=1`: en todas las
+de 16 bits).
+
 **Lo que rompía a Link en la PS3** (y que el host no reproducía porque
 copiaba todos los destinos de cada tarea sin llamar a
 `rdp_targets_present`; ya lo llama): `rsxkit` admitía 8 superficies y la

@@ -422,6 +422,27 @@ static void compare(const char *prefix, uint32_t dl, const struct target *t, uns
 	if (bad)
 		printf("; caja %u..%u × %u..%u", bx0, bx1 + 1, by0, by1 + 1);
 	printf("\n");
+	/* El bit de alfa (la cobertura que deja el RDP), si la imagen lo lleva
+	 * en el rasterizador: las de 16 bits que no son del ancho del VI, o
+	 * todas con SALSA64_ALFA_EN_TODAS=1. Solo donde la HLE dibujó: lo que
+	 * la lista no cubre queda en negro (con alfa 0 en un destino con alfa)
+	 * y no se cuenta; tampoco lo negro que sí dibujó. */
+	if (raster_image_alpha(t->addr)) {
+		uint32_t a0 = 0, a1 = 0, same = 0;
+		for (uint32_t y = 0; y < h; y++)
+			for (uint32_t x = 0; x < w; x++) {
+				uint32_t o = hle[y * RASTER_W + x];
+				if (!(o & 0xFFFFFFu))
+					continue;
+				uint32_t hb = o >> 24 ? 0u : 1u;
+				uint32_t cb = salsa64_rd16(rdram_orig + t->addr + 2 * (y * width + x)) & 1u;
+				same += hb == cb;
+				a0 += hb < cb;
+				a1 += hb > cb;
+			}
+		printf("    bit de alfa: %u píxeles iguales a la consola, %u en 0 donde la consola tiene 1, %u en 1 donde "
+		       "tiene 0\n", same, a0, a1);
+	}
 	if (bad) {
 		printf("    mapa (décimas de cada celda que difieren, '.' ninguna):\n");
 		for (int r = 0; r < MAP_ROWS; r++) {
@@ -509,7 +530,8 @@ static void cmds_to_be(uint8_t *cmd, uint32_t bytes)
 		} else if (op == GFX_OP_DRAW && size >= sizeof(struct gfx_draw)) {
 			SW32(r, struct gfx_draw, zimg, 1);
 			SW16(r, struct gfx_draw, scissor, 4);
-			SW32(r, struct gfx_draw, fog_color, 3);  /* fog_color, prim_kind, prim_tile */
+			SW32(r, struct gfx_draw, fog_color, 2);  /* fog_color, prim_kind */
+			SW16(r, struct gfx_draw, prim_tile, 1);  /* detrás, cvg_bit y relleno: bytes */
 			for (int t = 0; t < 2; t++) {
 				uint8_t *x = r + offsetof(struct gfx_draw, tex) + t * sizeof(struct gfx_tex);
 				SW32(x, struct gfx_tex, offset, 1);
@@ -795,8 +817,18 @@ static void usage(FILE *out)
 	      "                      rasterizador copió a la RDRAM, como en la PS3, no de la consola\n"
 	      "      --gfxdump       también la salida de la HLE de cada lista, como el gfxdump de\n"
 	      "                      la PS3 (big-endian): <volcado>-<lista>.gfxdump.bin, para\n"
-	      "                      tools/gfxdump.py, --raster-dump o \"dump:\" en el RSX\n",
+	      "                      tools/gfxdump.py, --raster-dump o \"dump:\" en el RSX\n"
+	      "  En las imágenes de 16 bits con alfa en el rasterizador compara también el bit\n"
+	      "  de alfa (la cobertura del RDP); SALSA64_ALFA_EN_TODAS=1 lo lleva en todas,\n"
+	      "  SALSA64_ALFA_FRAGMENTO=1 deja el alfa del fragmento (como la v0.2.15).\n",
 	      out);
+}
+
+/* Variable de entorno puesta y distinta de "" y de "0" (como salsa64_host_env_on). */
+static bool env_on(const char *name)
+{
+	const char *v = getenv(name);
+	return v && *v && *v != '0';
 }
 
 int ares_main(int argc, char **argv)
@@ -851,6 +883,12 @@ int ares_main(int argc, char **argv)
 		sscanf(getenv("SALSA64_AA_EDGE_OFFSET"), "%f,%f", &raster_edge_factor, &raster_edge_units);
 	if (getenv("SALSA64_AA_EDGE_WIDTH"))
 		raster_edge_width = (float)atof(getenv("SALSA64_AA_EDGE_WIDTH"));
+	/* El alfa de los destinos como al jugar (run.c), y en todas las imágenes
+	 * de 16 bits para comparar su bit con el de la consola. */
+	raster_target_alpha = !env_on("SALSA64_SIN_ALFA_DESTINOS");
+	raster_copy_alpha = !env_on("SALSA64_COPIA_SIN_ALFA");
+	raster_cvg_alpha = !env_on("SALSA64_ALFA_FRAGMENTO");
+	raster_alpha_all = env_on("SALSA64_ALFA_EN_TODAS");
 	{
 		const char *e = getenv("SALSA64_SIN_SOMBRA_AFIN");  /* como salsa64_host_env_on */
 		raster_affine = !(e && *e && strcmp(e, "0"));

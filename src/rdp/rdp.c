@@ -396,6 +396,10 @@ static struct {
 	/* Si las copias a la RDRAM de un destino con alfa llevan su alfa al bit
 	 * de RGBA5551 (copia-sin-alfa lo apaga: alfa 1, como antes). */
 	bool copy_alpha;
+	/* Si los dibujos de los ciclos 1 y 2 dejan en un destino con alfa la
+	 * cobertura del RDP (gfx_draw.cvg_bit); alfa-fragmento lo apaga: el
+	 * alfa del fragmento, como hasta la v0.2.15. */
+	bool cvg_alpha;
 	/* Si las imágenes chicas de 32 bits las dibuja el PPE (gfx-mascara32-rsx lo apaga). */
 	bool mask32_on;
 	bool zclear_target;          /* el borrado pertenece a la próxima color image */
@@ -554,6 +558,7 @@ int salsa64_rdp_init(uint32_t scale)
 	rdp.big8_prime = true;
 	rdp.layer8_on = true;
 	rdp.copy_alpha = true;
+	rdp.cvg_alpha = true;
 	rdp.mask32_on = true;
 	rdp.rsx_safe = true;
 	layer8_clock = tb_now;
@@ -2419,18 +2424,33 @@ static bool to_rsxkit(const struct gfx_draw *g, struct set *s, int cur, rsxkit_d
 			return false;
 	}
 	memcpy(d->k, g->k, sizeof d->k);
-	/* Destino con alfa: el alfa de la N64 en lo que se escribe. Un dibujo
-	 * normal deja 1 en cada píxel (rsxkit_draw.dst_alpha por omisión); un
-	 * relleno, su bit de alfa (gfx_draw.aref); una copia sin mezcla, el
-	 * alfa del texel (el RDP copia los 16 bits tal cual). */
+	/* Destino con alfa: el bit de alfa que el RDP deja en lo que escribe. En
+	 * un relleno, el del color (gfx_draw.aref); en una copia, el del texel
+	 * (copia los 16 bits tal cual); en los ciclos 1 y 2, la cobertura y no
+	 * el alfa de la mezcla (gfx_draw.cvg_bit: 1, el de la memoria, el del
+	 * alfa con CVG_X_ALPHA o el mayor). `alfa-fragmento` vuelve a dejar el
+	 * alfa del fragmento en todo, como hasta la v0.2.15 (rsxkit dejaba ese
+	 * con RSXKIT_DSTA_ONE): Dr. Mario 64 dibuja los paneles translúcidos de
+	 * su fondo con alfa 0,375, los copiaba a la RDRAM con el bit en 0 y los
+	 * pega con prueba de alfa: salían en blanco (#62). */
 	if (cur >= 0 && rdp.surf[cur] && rsxkit_target_has_alpha(rdp.surf[cur])) {
+		static const uint8_t dsta[] = {
+			[GFX_CVG_ONE] = RSXKIT_DSTA_ONE, [GFX_CVG_KEEP] = RSXKIT_DSTA_KEEP,
+			[GFX_CVG_ALPHA] = RSXKIT_DSTA_FRAG, [GFX_CVG_MAX] = RSXKIT_DSTA_MAX,
+		};
 		if (g->cycle == G_CYC_FILL) {
 			d->dst_alpha = RSXKIT_DSTA_FRAG;
 			d->k[RSXKIT_K_ONE][0][3] = (float)g->aref / 255.0f;
 			rdp.stats.alpha_fills++;
-		} else if (g->cycle == G_CYC_COPY && d->blend == RSXKIT_BLEND_OFF) {
+		} else if (g->cycle == G_CYC_COPY) {
 			d->dst_alpha = RSXKIT_DSTA_FRAG;
 			rdp.stats.alpha_fills++;
+		} else if (!rdp.cvg_alpha) {
+			d->dst_alpha = RSXKIT_DSTA_FRAG;
+		} else {
+			uint8_t m = g->cvg_bit < sizeof dsta ? g->cvg_bit : GFX_CVG_ONE;
+			d->dst_alpha = dsta[m];
+			rdp.stats.alpha_cvg[m]++;
 		}
 	}
 	return true;
@@ -2474,6 +2494,11 @@ void salsa64_rdp_set_big8_wait(bool wait)
 void salsa64_rdp_set_copy_alpha(bool on)
 {
 	rdp.copy_alpha = on;
+}
+
+void salsa64_rdp_set_cvg_alpha(bool on)
+{
+	rdp.cvg_alpha = on;
 }
 
 void salsa64_rdp_set_big8_prime(bool prime)

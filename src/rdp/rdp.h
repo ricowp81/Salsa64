@@ -97,6 +97,10 @@ struct salsa64_rdp_stats {
 	 * canal alfa, texturas leídas de uno de ellos, y rellenos / copias de
 	 * texturas que escribieron su alfa tal cual (rsxkit_draw.dst_alpha). */
 	uint32_t targets_alpha, tex_alpha, alpha_fills;
+	/* Dibujos de los ciclos 1 y 2 en un destino con alfa por el bit que
+	 * dejan (gfx_draw.cvg_bit, GFX_CVG_*: 1, el de la memoria, el del alfa,
+	 * el mayor); salsa64_rdp_set_cvg_alpha. */
+	uint32_t alpha_cvg[4];
 	/* Copias a la RDRAM de un destino con alfa que llevaron su alfa al bit
 	 * de RGBA5551 (salsa64_rdp_set_copy_alpha). */
 	uint32_t alpha_copies;
@@ -241,6 +245,11 @@ void salsa64_rdp_set_big8_prime(bool prime);
  * RDP; `false` (bandera copia-sin-alfa) vuelve a copiarlas en RGB565 con
  * alfa 1 (LEGO Racers, #34: autos lejanos dentro de un cuadro). */
 void salsa64_rdp_set_copy_alpha(bool on);
+/* Los dibujos de los ciclos 1 y 2 dejan en un destino con alfa la cobertura
+ * del RDP (gfx_draw.cvg_bit: casi siempre 1), no el alfa de la mezcla;
+ * `false` (bandera alfa-fragmento) vuelve al alfa del fragmento, como hasta
+ * la v0.2.15 (Dr. Mario 64, #62: paneles del fondo en blanco). */
+void salsa64_rdp_set_cvg_alpha(bool on);
 /* Las capas de 8 bits (big8) las dibuja el PPE en la RDRAM (layer8.h) y no
  * pasan por el RSX ni por su copia; `false` (bandera gfx-capas8-rsx) vuelve
  * a dibujarlas en el RSX y a esperar la copia. */

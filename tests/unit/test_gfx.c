@@ -1415,6 +1415,58 @@ static void gfx_cvg_x_alpha(void)
 	}
 }
 
+/* El bit de alfa que el RDP deja en una imagen de 16 bits (gfx_draw.cvg_bit):
+ * la cobertura según CVG_DST, IM_RD, CVG_X_ALPHA y FORCE_BL, no el alfa de
+ * la mezcla. Los paneles translúcidos del fondo de Dr. Mario 64 (ZAP,
+ * FORCE_BL, IM_RD, alfa 0,375) dejan 1 en la consola (#62). */
+static void gfx_cvg_bit(void)
+{
+	static const struct { uint32_t ol; uint8_t cvg; } c[] = {
+		{ 0x00552078, GFX_CVG_ONE },   /* G_RM_AA_ZB_OPA_SURF: CLAMP */
+		{ 0x0F0A4000, GFX_CVG_ONE },   /* G_RM_OPA_SURF: CLAMP */
+		{ 0x0C184240, GFX_CVG_ONE },   /* Dr. Mario: ZAP, FORCE_BL, IM_RD */
+		{ 0x00504241, GFX_CVG_ONE },   /* el otro de Dr. Mario, con G_AC_THRESHOLD */
+		{ 0x005049D8, GFX_CVG_KEEP },  /* G_RM_AA_ZB_XLU_SURF: WRAP con IM_RD */
+		{ 0x0F0A4100, GFX_CVG_ONE },   /* WRAP sin IM_RD: la memoria vale 7 */
+		{ 0x0F0A4340, GFX_CVG_KEEP },  /* SAVE con IM_RD */
+		{ 0x0F0A4300, GFX_CVG_ONE },   /* SAVE sin IM_RD */
+		{ 0x00553078, GFX_CVG_ALPHA }, /* G_RM_AA_ZB_TEX_EDGE: CVG_X_ALPHA sin FORCE_BL */
+		{ 0x0F0A7008, GFX_CVG_ONE },   /* G_RM_TEX_EDGE: CVG_X_ALPHA, FORCE_BL, sin IM_RD */
+		{ 0x0F0A7048, GFX_CVG_MAX },   /* el mismo con IM_RD: cvg·α + la de la memoria */
+		{ 0x0F0A7248, GFX_CVG_ONE },   /* CVG_X_ALPHA con ZAP */
+	};
+	const struct vtx v[3] = { { 0, 0, 0, 0, 0, { 0 } }, { 1, 0, 0, 0, 0, { 0 } }, { 0, 1, 0, 0, 0, { 0 } } };
+	for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
+		start();
+		viewport_320x240();
+		load_mtx(ident, true);
+		load_mtx(ident, false);
+		set_combine(CC_A_ZERO, CC_ZERO, CC_C_ZERO, CC_SHADE, CC_ZERO, CC_ZERO, CC_ZERO, CC_SHADE);
+		dl(0xEF000000 | G_CYC_1CYCLE << 20, c[i].ol);  /* G_RDPSETOTHERMODE */
+		dl(0x01000000 | 3 << 12 | 3 << 1, put_vertices(v, 3));
+		dl(0x05000000 | 0 << 16 | 1 << 9 | 2 << 1, 0);
+		run();
+		const struct gfx_draw *d = draw_n(0);
+		CHECK(d != NULL);
+		if (d)
+			CHECK_EQ(d->cvg_bit, c[i].cvg);
+	}
+	/* Un relleno deja el bit de su color, sea cual sea CVG_DST. */
+	start();
+	dl(0xFF100000 | 319, 0x00100000);
+	dl(0xEF000000 | G_CYC_FILL << 20, 0x005049D8);
+	dl(0xF7000000, 0xF800F800);  /* rojo con alfa 0 */
+	dl(0xF6000000 | (319 << 2) << 12 | (239 << 2), 0);
+	run();
+	const struct gfx_draw *f = draw_n(0);
+	CHECK(f != NULL);
+	if (f) {
+		CHECK_EQ(f->cycle, G_CYC_FILL);
+		CHECK_EQ(f->cvg_bit, GFX_CVG_ALPHA);
+		CHECK_EQ(f->aref, 0);
+	}
+}
+
 /* Cobertura con AA_EN (gfx_draw.aa): solo triángulos opacos sin prueba de
  * alfa; ni los translúcidos, ni los recortados por el alfa, ni sin AA_EN,
  * ni los rectángulos. */
@@ -3492,6 +3544,7 @@ void t_suite_gfx(void)
 	RUN(gfx_fill_1cycle_edge);
 	RUN(gfx_draw_batching);
 	RUN(gfx_cvg_x_alpha);
+	RUN(gfx_cvg_bit);
 	RUN(gfx_dl_flow);
 	RUN(gfx_load_ucode_skips_foreign);
 	RUN(gfx_load_ucode_same_generation);

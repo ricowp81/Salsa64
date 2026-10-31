@@ -2971,6 +2971,13 @@ static void gfx_summary(void)
 		raster_edge_stats(&dr, &de, &dt);
 		fprintf(stderr, "salsa64-run: gfx: aristas de los dibujos con AA: %.1f de %.1f dibujos por tarea (%.0f "
 			"triángulos)%s\n", de / n, dr / n, dt / n, raster_aa_edges ? ", encendidas" : ", apagadas");
+		uint32_t cvg[4], big;
+		raster_alpha_stats(cvg, &big);
+		if (cvg[0] || cvg[1] || cvg[2] || cvg[3] || big)
+			fprintf(stderr, "salsa64-run: gfx: alfa en los destinos: cobertura de los dibujos: %u con alfa 1, %u con el "
+				"de la memoria, %u con el del fragmento, %u con el mayor%s; %u copias grandes de otro ancho que el VI\n",
+				cvg[0], cvg[1], cvg[2], cvg[3], raster_cvg_alpha ? "" : " (alfa-fragmento: todos con el del fragmento)",
+				big);
 		uint32_t d8, t8r, t8m;
 		raster_8bit_stats(&d8, &t8r, &t8m);
 		fprintf(stderr, "salsa64-run: gfx: imágenes de 8 bits: %u dibujos; texturas I8 de ellas: %u de su imagen, %u "
@@ -3239,6 +3246,8 @@ static int raster_dump_buf(uint8_t *buf, size_t size, const char *path, const ch
 			swap32s(d->scissor, 8 + 8);  /* deshace scissor y los bytes de estado */
 			for (int i = 0; i < 4; i++)
 				d->scissor[i] = salsa64_rd16((uint8_t *)&d->scissor[i]);
+			swap32s(&d->prim_tile, 4);  /* deshace: tile de 16 bits, cvg_bit y relleno */
+			d->prim_tile = salsa64_rd16((uint8_t *)&d->prim_tile);
 			/* Bytes de nterms a pad: factores, viscvg y aa. */
 			swap32s(&d->nterms, offsetof(struct gfx_draw, tex) - offsetof(struct gfx_draw, nterms));
 			for (int t = 0; t < 2; t++) {
@@ -4154,6 +4163,7 @@ int main(int argc, char **argv)
 		raster_aa_edges = atoi(getenv("SALSA64_AA_EDGES")) != 0;
 	raster_target_alpha = !salsa64_host_env_on("SALSA64_SIN_ALFA_DESTINOS");
 	raster_copy_alpha = !salsa64_host_env_on("SALSA64_COPIA_SIN_ALFA");
+	raster_cvg_alpha = !salsa64_host_env_on("SALSA64_ALFA_FRAGMENTO");
 	if (getenv("SALSA64_AA_EDGE_OFFSET"))
 		sscanf(getenv("SALSA64_AA_EDGE_OFFSET"), "%f,%f", &raster_edge_factor, &raster_edge_units);
 	const struct salsa64_gfx_sink sink = { NULL, gfx_acquire, gfx_done };
