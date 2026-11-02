@@ -24,7 +24,7 @@
     {"name":"Rush 2049","state":"Jugable","evidence":"PS3 real","scope":"Juego","tags":["MusyX","audio"],"note":"El audio MusyX está disponible en la prueba documentada."},
     {"name":"F-Zero X","state":"Jugable","evidence":"PS3 real","scope":"Juego","tags":["orden de dibujo"],"note":"Orden de dibujo verificado; arranque del CIC 6106 corregido. Falta la niebla."},
     {"name":"Castlevania","state":"Jugable","evidence":"PS3 real","scope":"Juego","tags":["orden de dibujo"],"note":"La corrección de orden de dibujo está verificada."},
-    {"name":"FIFA 99","state":"En investigación","evidence":"PS3 real","scope":"Partido","tags":["juego"],"note":"Llega a iniciar un partido; falta una prueba de mayor alcance."},
+    {"name":"FIFA 99","state":"En investigación","evidence":"PS3 real","scope":"Partido","tags":["juego"],"note":"Llega a iniciar un partido; al acabarlo, «Continue» dejaba la pantalla en negro (#69: el espejo del framebuffer pisaba el heap; arreglado, falta la PS3)."},
     {"name":"Animal Forest","state":"En investigación","evidence":"PS3 real","scope":"Menús","tags":["S2DEX","localización"],"note":"Se ve, pero los menús de fecha y nombre requieren trabajo."},
     {"name":"Turok 2: Seeds of Evil","state":"Verificado en PS3","evidence":"PS3 real","scope":"Juego","tags":["Acclaim","HLE"],"note":"Arranca (en la v0.2.9 no) a 60 campos/s; la HLE de Acclaim dibuja sus luces de punto."},
     {"name":"Turok 3: Shadow of Oblivion","state":"Jugable","evidence":"PS3 real","scope":"Juego","tags":["Acclaim","HLE"],"note":"56 campos/s con luces de Acclaim."},

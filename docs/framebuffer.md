@@ -241,6 +241,31 @@ apaga (para comparar) y `vigilante.cfg` («6b3000 749000», hexadecimal)
 escribe en el log cada copia, VISCVG o DMA que cae en ese rango y si dejó
 0x00010001.
 
+**Lo que otra color image dibujó después** (`rdp_claim_ring`, targets.h;
+FIFA 99, #69). La huella de una línea la renueva cualquier tarea cuyos
+dibujos puedan tocarla, también con otra color image, y entonces ya incluye
+lo que el CPU escribió antes de esa tarea. FIFA 99 pasa de los framebuffers
+de 512 × 384 del menú (0x157640 y 0x1b76c0) a los de 480 × 360 del partido
+en la misma memoria: suelta los viejos y pide dos bloques al heap; la
+cabecera del segundo (0x1abc70: «BM», banderas, tamaño, siguiente y
+anterior) cae justo detrás del primer framebuffer nuevo, que acaba en
+0x1abc40. La primera tarea del partido renueva la huella de la línea
+0x1abc00 y el espejo del último cuadro del menú, que llega después, la
+pasaba: dejaba ahí su negro (0x00010001). Nueve minutos después, al darle a
+«Continue» tras el partido, el juego suelta ese bloque, lee el anterior en
+0x00010001 y falla (AdEL en 0x10003, pc 0x8005B344): pantalla negra. Ahora
+el hilo de emulación anota además, por tarea, qué filas de qué color image
+(dirección y bytes por fila, de 8, 16 o 32 bits) pudieron tocar sus dibujos,
+en un anillo de 64 entradas, y el espejo del framebuffer de la tarea T no
+escribe las líneas que una color image distinta dibujó en una tarea
+posterior a T (lo que la consola tendría encima). La misma color image vuelta
+a dibujar no cuenta (eso lo cubre la guarda), ni otra de la misma tarea; si
+el anillo ya perdió entradas posteriores a T, se copia como antes. Solo el
+espejo del framebuffer (las copias y los espejos chicos siguen igual). El log
+de cada 5 s suma «N espejos con M líneas sin escribir porque otra color
+image las dibujó después» y las primeras 12 dicen el tramo;
+`espejo-pisa-otras` en la carpeta de datos vuelve a como antes.
+
 **Rellenos de imagen alta antes de que existan los destinos.** Star Fox 64
 limpia sus tres framebuffers con un solo FILLRECT de 320 × 720 en la primera
 tarea gráfica (campo 3); los destinos nacen en las tres siguientes. El
