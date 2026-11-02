@@ -6,6 +6,8 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
 
 ## [Unreleased]
 
+## [0.2.16] — 2026-11-02
+
 ### Fixed
 - **Conker's Bad Fur Day: after the elevator at the end of Heist the cutscene
   was garbled and the game then showed a black screen with a few lines** (#68).
