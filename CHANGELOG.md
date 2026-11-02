@@ -7,6 +7,16 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
 ## [Unreleased]
 
 ### Fixed
+- **Conker's Bad Fur Day: after the elevator at the end of Heist the cutscene
+  was garbled and the game then showed a black screen with a few lines** (#68).
+  Conker ships one graphics microcode with eight data segments ("F3DEX",
+  "F3DEXBS", "F3DEXBG" and "F3DEXBGBS", with and without ".NoN") and switches
+  to "F3DEX.NoN" from that elevator on. The emulator recognised Conker's
+  microcode by its "F3DEXBG" name only, so that part of the game ran as plain
+  F3DEX2, which has no four-triangle command: almost nothing was drawn. Conker's
+  microcode is now recognised by its code, so every variant uses Conker's
+  graphics path. The file `conker-ucode-viejo` in `/dev_hdd0/salsa64/` restores
+  the old name-only detection.
 - **Conker's Bad Fur Day (USA): the Great Mighty Poo did not open his mouth and
   Sweet Melody got stuck when entered straight from the Chapters menu** (#3).
   The game's music manager starts a song by sending PLAY to the sequence

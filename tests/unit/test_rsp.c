@@ -744,6 +744,78 @@ static void rsp_detect_animal_crossing(void)
 	memset(p, 0, size);
 }
 
+/* Conker (#68): un mismo código con ocho segmentos de datos («F3DEX», «F3DEXBS», «F3DEXBG» y «F3DEXBGBS», con y
+ * sin «.NoN»); desde el ascensor del final de Heist el juego usa «F3DEX.NoN», que por el texto parecía un F3DEX2.
+ * Por el CRC de su código (palabras del host) todos son F3DEXBG, con el plano cercano según su nombre; con el
+ * interruptor conker-ucode-viejo, solo el texto, como antes. Código fabricado para que dé ese CRC y textos con el
+ * formato de los suyos (sin copiar sus datos). */
+static void rsp_detect_gbi_conker(void)
+{
+	struct salsa64_bus *bus = &t_n64.bus;
+	const uint32_t code = 0x100000, size = 0x1000;  /* donde put_task dice que está el código */
+	uint8_t *p = bus->rdram + code, tail[4];
+	uint32_t state = 0xFFFFFFFFu;
+	for (uint32_t i = 0; i < size - 4; i++)
+		for (int k = 0; k < 8; k++)
+			state = (state >> 1) ^ (0xEDB88320u & (0u - (state & 1)));
+	memset(p, 0, size);
+	crc32_force(state, 0x1B4ACE88u, tail);
+	for (int i = 0; i < 4; i++)
+		p[size - 4 + (3 - i)] = tail[i];
+	CHECK_EQ(salsa64_crc32_words_swapped(p, size), 0x1B4ACE88u);
+
+	static const struct {
+		const char *text;
+		bool nonear;
+		enum salsa64_gbi old;  /* con conker-ucode-viejo */
+	} cases[] = {
+		{ "RSP Gfx ucode F3DEX.NoN   fifo 2.08 ", true, SALSA64_GBI_F3DEX2 },
+		{ "RSP Gfx ucode F3DEX       fifo 2.08 ", false, SALSA64_GBI_F3DEX2 },
+		{ "RSP Gfx ucode F3DEXBS.NoN fifo 2.08 ", true, SALSA64_GBI_F3DEX2 },
+		{ "RSP Gfx ucode F3DEXBS     fifo 2.08 ", false, SALSA64_GBI_F3DEX2 },
+		{ "RSP Gfx ucode F3DEXBG.NoN fifo 2.08 ", true, SALSA64_GBI_F3DEXBG },
+		{ "RSP Gfx ucode F3DEXBG     fifo 2.08 ", false, SALSA64_GBI_F3DEXBG },
+		{ "RSP Gfx ucode F3DEXBGBS.Nofifo 2.08 ", true, SALSA64_GBI_F3DEXBG },
+		{ "RSP Gfx ucode F3DEXBGBS   fifo 2.08 ", false, SALSA64_GBI_F3DEXBG },
+	};
+	struct salsa64_gfx_backend on = fake_backend, old = fake_backend;
+	old.conker_text_only = true;
+	for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+		memset(bus->rdram + 0x5000, 0, 0x800);
+		put_text(0x5040, cases[c].text);
+		put_task(SALSA64_TASK_GFX, 0x5000, 0x6000);
+		struct salsa64_task task;
+		salsa64_rsp_read_task(bus, &task);
+		salsa64_rsp_set_gfx(bus, &on);
+		CHECK_EQ(salsa64_rsp_detect_gbi(bus, &task), SALSA64_GBI_F3DEXBG);
+		/* El plano cercano llega en la tarea que arranca. */
+		memset(&fake, 0, sizeof fake);
+		wr(SP_REG(SALSA64_SP_STATUS), 0x1 | 0x4);
+		CHECK_EQ(fake.starts, 1);
+		CHECK_EQ(fake.gbi, SALSA64_GBI_F3DEXBG);
+		struct gfx_job job;
+		salsa64_gfx_job(&job, bus, &fake.task, fake.gbi);
+		CHECK_EQ((job.flags & GFX_JOB_NONEAR) != 0, cases[c].nonear);
+		salsa64_sched_dispatch(&t_n64.sched, CPU->cycles + bus->rsp.gfx_cycles + bus->rsp.dp_cycles);
+		wr(SP_REG(SALSA64_SP_STATUS), 0x8);
+		bus->mi.intr = 0;
+		salsa64_rsp_set_gfx(bus, &old);
+		CHECK_EQ(salsa64_rsp_detect_gbi(bus, &task), cases[c].old);
+	}
+	/* Otro código con el mismo texto: lo de siempre. */
+	p[17] ^= 1;
+	salsa64_rsp_set_gfx(bus, &on);
+	struct salsa64_task task;
+	salsa64_rsp_read_task(bus, &task);
+	CHECK_EQ(salsa64_rsp_detect_gbi(bus, &task), SALSA64_GBI_F3DEXBG);  /* el último texto: «F3DEXBGBS» */
+	memset(bus->rdram + 0x5000, 0, 0x800);
+	put_text(0x5040, cases[0].text);
+	CHECK_EQ(salsa64_rsp_detect_gbi(bus, &task), SALSA64_GBI_F3DEX2);
+	salsa64_rsp_set_gfx(bus, NULL);
+	memset(p, 0, size);
+	memset(bus->rdram + 0x5000, 0, 0x800);
+}
+
 static void rsp_detect_gbi(void)
 {
 	/* Solo el formato de los textos de identificación, sin copiarlos. */
@@ -950,6 +1022,7 @@ void t_suite_rsp(void)
 	RUN(rsp_detect_gbi_dkr);
 	RUN(rsp_detect_gbi_acclaim);
 	RUN(rsp_detect_gbi_eurocom);
+	RUN(rsp_detect_gbi_conker);
 	RUN(rsp_detect_animal_crossing);
 	RUN(rsp_dpc_from_cpu);
 	RUN(rsp_dpc_split_command);
