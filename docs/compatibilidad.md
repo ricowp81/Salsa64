@@ -14,6 +14,7 @@ Las entradas antiguas conservan sus métodos de prueba como historia.
 
 | Juego | Estado | Notas |
 |---|---|---|
+| FIFA 99 (USA) | imagen quieta en el menú y el partido en el host (antes la ventana presentada saltaba una fila cada campo; falta la PS3) | cuadros entrelazados escalados (512 × 384 a 1,6 y 480 × 360 a 1,5, dos búferes): se tejen como los de 640 × 480 (`vi-escalado-campos` vuelve a por campos). Resident Evil 2 (436 × 382) y Rogue Squadron (640 × 335) cambian igual |
 | FIFA 99 (USA) | «Continue» tras el partido sigue a la tabla de posiciones en el host con el estado del reporte y la cabecera del heap repuesta (falta la PS3) | en la PS3, el espejo del último cuadro del menú (512 × 384) pisaba la cabecera de un bloque del heap que el juego ya había puesto detrás del framebuffer del partido (480 × 360); al acabar el partido, al soltar ese bloque, AdEL y pantalla negra. El espejo ya no escribe lo que otra color image dibujó después (`espejo-pisa-otras` vuelve a como antes). El estado del reporte ya trae la cabecera rota: hay que jugar un partido nuevo |
 
 ## 2026-10-31 — Reporte #62 (Dr. Mario 64)
