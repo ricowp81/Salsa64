@@ -43,7 +43,11 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
   an alpha test every frame, so the score box, the bottle interior, Dr. Mario's
   box and the level/speed boxes came out white (with the falling pill's trail
   inside the bottle). The targets now get the RDP's bit (checked against ares:
-  identical bits in the whole image). The flag file `alfa-fragmento` in
+  identical bits in the whole image). The RSX blender cannot output a constant
+  alpha, so rsxkit writes alpha 1 with an extra alpha-only pass (same program,
+  depth test and alpha test) when the fragment alpha is not already 1; a boot
+  self-test logs what each `dst_alpha` mode leaves on the real RSX
+  (`rsxkit: autoprueba dst_alpha …`). The flag file `alfa-fragmento` in
   `/dev_hdd0/salsa64/` restores the 0.2.15 behaviour; `copia-sin-alfa` still
   works as before.
 

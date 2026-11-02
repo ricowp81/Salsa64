@@ -96,7 +96,7 @@
   que pasa a 16 bits: el tamaño del dibujo no cambia): 1 en CLAMP y ZAP, el de la memoria en WRAP
   y SAVE con IM_RD, el del alfa con CVG_X_ALPHA sin FORCE_BL, el mayor con CVG_X_ALPHA, FORCE_BL
   e IM_RD; el texel en COPY y el color en FILL (docs/framebuffer.md). rsxkit: `RSXKIT_DSTA_ONE`
-  da 1 de verdad (factor `GCM_CONSTANT_ALPHA` con el color de mezcla en alfa 1) y hay
+  da 1 de verdad (dos pasadas si el alfa del fragmento no es 1: ver abajo) y hay
   `RSXKIT_DSTA_KEEP` (máscara sin el alfa) y `RSXKIT_DSTA_MAX` (ecuación MAX). `src/rdp/rdp.c`
   los usa; interruptor `alfa-fragmento` (todo con el alfa del fragmento, como la v0.2.15); el log
   de cada 5 s cuenta los dibujos por modo. Host: lo mismo (`SALSA64_ALFA_FRAGMENTO=1`) y copia
@@ -119,10 +119,22 @@
   lo único que cambia en la PS3 respecto de la v0.2.15 es Dr. Mario. 821 pruebas unitarias sin fallos (nuevas
   `gfx_cvg_bit` y `raster_alpha_cvg`). Pila de los SPE: holgura 2304 / 2544 / 14448 / 3328 /
   2032 / 4656 / 2704 (32 bytes más de cadena y ~128 de código por imagen; mínimo 1536).
-- Falta la PS3: que los paneles salgan bien (el factor constante del RSX tiene que dar alfa 1),
-  que LEGO Racers siga sin el cuadro y que no cambie nada visible en los juegos con render a
-  textura (Mario Tennis, logos de Rogue Squadron). Aparte, las píldoras que no se ven mientras
-  caen (otro trabajo).
+- PS3 (paquete de prueba con la primera versión, 2026-11-02): el fondo seguía en blanco con «77
+  con alfa 1» en el log. La primera versión daba alfa 1 con el factor `GCM_CONSTANT_ALPHA` y eso
+  no puede funcionar: la mezcla da As·fs + Ad·fd y el factor multiplica (As·Ac = el del
+  fragmento). El host suponía «1» y por eso pasaba. Ahora rsxkit hace `RSXKIT_DSTA_ONE` en dos
+  pasadas cuando el alfa del fragmento no es 1 en todo el dibujo: una solo en el alfa, con el
+  mismo programa, vértices, tijeras y prueba de profundidad sin escribirla, y el alfa llevado a 1
+  o más (×1/ref con la prueba de alfa contra 1, para descartar lo mismo; +1 en el término
+  constante sin prueba), y después el dibujo con `KEEP`. Costo: un dibujo más (solo alfa, sin
+  escribir z) por cada dibujo con alfa no constante en un destino con alfa; en Dr. Mario, 77 en
+  la tarea del fondo. Al arrancar, `rsxkit: autoprueba dst_alpha ONE=… ONE+mezcla=… ONE+prueba=…
+  ONE+descarte=… FRAG=… KEEP=… MAX=…/… (esperado ff ff ff 60 20 60 60/a0): bien|MAL` dice lo que
+  deja cada modo en el RSX real; el informe de 5 s suma «alfa 1 en el RSX: N con la pasada del
+  alfa, N en una pasada, N sin poder».
+- Falta la PS3: la autoprueba en «bien», los paneles sin blanco, que LEGO Racers siga sin el
+  cuadro y que no cambie nada visible en los juegos con render a textura (Mario Tennis, logos de
+  Rogue Squadron). Aparte, las píldoras que no se ven mientras caen (otro trabajo).
 
 ## 2026-10-29 — Pila del SPE 0 tras unir F-Zero X afín y Vigilante 8 (rama pila-spe0)
 

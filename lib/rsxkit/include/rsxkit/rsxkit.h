@@ -358,9 +358,9 @@ typedef struct rsxkit_depth rsxkit_depth;    /* profundidad Z24S8, memoria local
  * 2D, los blits y las pasadas de posprocesado lo leen solo de ARGB8888 (de
  * XRGB8888 toman 1). Sin alfa, la lectura trae lo que el RSX deje en el
  * byte alto de X8R8G8B8 (opaco).
- * Un destino con alfa mezcla en los dibujos que dejan alfa 1 o el mayor
- * (factor constante o ecuación MAX en el canal alfa): conviene para los que
- * se leen como textura, no para el cuadro principal. */
+ * En un destino con alfa, RSXKIT_DSTA_ONE cuesta una pasada más por dibujo
+ * cuyo alfa no es 1 y MAX mezcla siempre: conviene para los que se leen
+ * como textura, no para el cuadro principal. */
 #define RSXKIT_TARGET_ALPHA 0x1u
 rsxkit_target *rsxkit_target_create(uint32_t width, uint32_t height);
 rsxkit_target *rsxkit_target_create_ex(uint32_t width, uint32_t height, uint32_t flags);
@@ -536,11 +536,40 @@ enum { RSXKIT_K_T0, RSXKIT_K_T0A, RSXKIT_K_T1, RSXKIT_K_T1A, RSXKIT_K_ONE, RSXKI
  * cuenta del alfa (RSXKIT_BLEND_ALPHA_MAX, _REPLACE_MIN_ALPHA,
  * _KEEP_MIN_ALPHA). Hasta 2026-10-31 RSXKIT_DSTA_ONE dejaba en realidad el
  * alfa del fragmento (la mezcla de alfa ONE / ZERO lo copia): quien dependa
- * de eso pasa a RSXKIT_DSTA_FRAG. */
-#define RSXKIT_DSTA_ONE  0  /* alfa 1 (factor de mezcla constante: el color de mezcla con alfa 1) */
+ * de eso pasa a RSXKIT_DSTA_FRAG.
+ * La mezcla del RSX no da una constante (el alfa sale de As·fs + Ad·fd y
+ * todos los factores multiplican), así que RSXKIT_DSTA_ONE se hace con dos
+ * pasadas cuando el alfa del fragmento no es 1 en todo el dibujo: primero
+ * una solo en el canal alfa, con el mismo programa, la misma prueba de
+ * profundidad (sin escribirla) y el alfa llevado a 1 o más (escalado por
+ * 1/ref con prueba de alfa, para descartar los mismos fragmentos; más 1 sin
+ * ella), y después el dibujo con RSXKIT_DSTA_KEEP. Con un programa propio
+ * (rsxkit_draw.program), o sin lugar para un término constante, queda el
+ * alfa del fragmento (rsxkit_dsta_stats lo cuenta). */
+#define RSXKIT_DSTA_ONE  0  /* alfa 1 (en dos pasadas si hace falta) */
 #define RSXKIT_DSTA_FRAG 1  /* el alfa del fragmento */
 #define RSXKIT_DSTA_KEEP 2  /* el del destino, sin cambiar (máscara de color sin el alfa) */
 #define RSXKIT_DSTA_MAX  3  /* el mayor entre el del fragmento y el del destino (ecuación MAX) */
+
+#define RSXKIT_DSTA_PASS 4  /* interno: la pasada del alfa (solo el canal alfa, sin mezcla) */
+
+
+/* Dibujos con RSXKIT_DSTA_ONE en un destino con alfa desde el arranque: los
+ * que llevaron la pasada del alfa, los de una sola pasada (el alfa del
+ * fragmento ya era 1) y los que quedaron con el del fragmento. */
+void rsxkit_dsta_stats(uint32_t *passes, uint32_t *single, uint32_t *failed);
+
+/* Autoprueba de dst_alpha en el RSX: en un destino con alfa borrado con
+ * alfa 0x60 dibuja un cuadrado por caso con el alfa del fragmento en 0x20
+ * (0xA0 en el último) y lee el alfa que quedó: RSXKIT_DSTA_ONE sin mezcla,
+ * con la mezcla RSXKIT_BLEND_ALPHA, con una prueba de alfa que pasa (ref
+ * 0x10) y con una que descarta (ref 0x40); FRAG; KEEP; MAX bajo y MAX alto.
+ * rsxkit_dsta_expected es lo que deben dar (FF FF FF 60 20 60 60 A0). Usa
+ * memoria local propia, espera al RSX y deja sin destino ligado y sin
+ * vértices (llamar fuera del dibujo, p. ej. al arrancar). 0 o RSXKIT_E*. */
+#define RSXKIT_DSTA_TEST_N 8
+extern const uint8_t rsxkit_dsta_expected[RSXKIT_DSTA_TEST_N];
+int rsxkit_dsta_selftest(uint8_t out[RSXKIT_DSTA_TEST_N]);
 
 typedef struct rsxkit_draw {
 	/* Programa opcional: entradas de rsxkit_lincomb.vcg. NULL conserva la combinación. */
@@ -576,6 +605,13 @@ typedef struct rsxkit_draw {
 	float z;            /* con RSXKIT_DEPTH_CONST: la profundidad de todo el dibujo */
 	float k[RSXKIT_K_TERMS][3][4];
 } rsxkit_draw;
+
+/* La pasada del alfa de RSXKIT_DSTA_ONE (lib/rsxkit/src/dsta.c, sin
+ * PSL1GHT: se prueba en el host). rsxkit_dsta_alpha_is_one: el alfa del
+ * fragmento es 1 en todo el dibujo (basta una pasada). rsxkit_dsta_alpha_pass
+ * arma en `b` la pasada del alfa de `d`; false si no se puede. */
+bool rsxkit_dsta_alpha_is_one(const rsxkit_draw *d);
+bool rsxkit_dsta_alpha_pass(const rsxkit_draw *d, rsxkit_draw *b);
 
 /* Programas generados: cuántos distintos hay en la caché, cuántos se
  * generaron en total (con los desalojos, si la caché se llenó) y cuántas

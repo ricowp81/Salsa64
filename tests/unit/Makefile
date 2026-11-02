@@ -24,7 +24,7 @@ CORE_SRCS := $(wildcard $(ROOT)/src/core/*.c $(ROOT)/src/cpu/*.c $(ROOT)/src/rsp
              $(ROOT)/src/frontend/filters/crt_params.c $(ROOT)/src/frontend/cuelgue.c $(ROOT)/src/frontend/seda_calc.c $(ROOT)/src/frontend/cartucho_mesh.c $(ROOT)/src/frontend/thumbs_calc.c \
 	     $(ROOT)/src/frontend/scale_auto.c $(ROOT)/src/frontend/prompts.c $(ROOT)/src/frontend/intro_logic.c \
              $(ROOT)/src/rdp/targets.c $(ROOT)/src/rdp/layer8.c $(ROOT)/src/rdp/mask32.c $(ROOT)/src/rdp/vmatch.c $(ROOT)/src/rdp/gfxdump.c $(ROOT)/src/rdp/blackbox.c $(ROOT)/src/host/raster.c $(ROOT)/src/host/gfxcheck.c $(ROOT)/lib/rsxkit/src/fpgen.c $(ROOT)/lib/rsxkit/src/sifm.c $(ROOT)/lib/rsxkit/src/text.c \
-             $(ROOT)/lib/rsxkit/src/ui_geom.c $(ROOT)/src/frontend/ra_core.c $(ROOT)/src/frontend/ra_rules.c $(addprefix $(ROOT)/,$(RC_FILES))
+             $(ROOT)/lib/rsxkit/src/ui_geom.c $(ROOT)/lib/rsxkit/src/dsta.c $(ROOT)/src/frontend/ra_core.c $(ROOT)/src/frontend/ra_rules.c $(addprefix $(ROOT)/,$(RC_FILES))
 TEST_SRCS := $(wildcard $(CURDIR)/*.c)
 OBJS      := $(patsubst $(ROOT)/%.c,$(OUT)/obj/%.o,$(CORE_SRCS) $(TEST_SRCS))
 

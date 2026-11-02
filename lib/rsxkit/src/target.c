@@ -712,3 +712,82 @@ void rsxkit_target_present(rsxkit_target *t, const rsxkit_rect *src, uint32_t im
 	rsxInvalidateTextureCache(rsxkit_g.ctx, GCM_INVALIDATE_TEXTURE);
 	rsxkit_blit(offset, t->pitch, t->w, s.h, u0, 0.0f, u1, 1.0f, RSXKIT_XRGB8888, &r, view->filter);
 }
+
+/* ---- Autoprueba del alfa de los dibujos (rsxkit_dsta_selftest) -------------- */
+
+/* Un caso: el modo, la mezcla, la prueba de alfa y el alfa del fragmento. */
+static const struct {
+	uint8_t dsta, blend, ref, a;
+} dsta_case[RSXKIT_DSTA_TEST_N] = {
+	{ RSXKIT_DSTA_ONE, RSXKIT_BLEND_OFF, 0, 0x20 },     /* 1 */
+	{ RSXKIT_DSTA_ONE, RSXKIT_BLEND_ALPHA, 0, 0x20 },   /* 1, con la mezcla del color por el alfa */
+	{ RSXKIT_DSTA_ONE, RSXKIT_BLEND_OFF, 0x10, 0x20 },  /* 1: pasa la prueba de alfa */
+	{ RSXKIT_DSTA_ONE, RSXKIT_BLEND_OFF, 0x40, 0x20 },  /* el del destino: la prueba lo descarta */
+	{ RSXKIT_DSTA_FRAG, RSXKIT_BLEND_OFF, 0, 0x20 },    /* el del fragmento */
+	{ RSXKIT_DSTA_KEEP, RSXKIT_BLEND_OFF, 0, 0x20 },    /* el del destino */
+	{ RSXKIT_DSTA_MAX, RSXKIT_BLEND_OFF, 0, 0x20 },     /* el del destino, mayor */
+	{ RSXKIT_DSTA_MAX, RSXKIT_BLEND_OFF, 0, 0xA0 },     /* el del fragmento, mayor */
+};
+#define DSTA_TEST_DST 0x60u  /* el alfa con que se borra el destino */
+
+const uint8_t rsxkit_dsta_expected[RSXKIT_DSTA_TEST_N] = { 0xFF, 0xFF, 0xFF, DSTA_TEST_DST, 0x20, DSTA_TEST_DST,
+							   DSTA_TEST_DST, 0xA0 };
+
+int rsxkit_dsta_selftest(uint8_t out[RSXKIT_DSTA_TEST_N])
+{
+	enum { CELL = 8, W = CELL * RSXKIT_DSTA_TEST_N, H = CELL };
+	memset(out, 0, RSXKIT_DSTA_TEST_N);
+	rsxkit_target *t = rsxkit_target_create_ex(W, H, RSXKIT_TARGET_ALPHA);
+	rsxkit_vertex *v = rsxMemalign(128, 6 * RSXKIT_DSTA_TEST_N * sizeof *v);
+	uint32_t voff = 0;
+	int rc = RSXKIT_OK;
+	if (!t || !v || rsxAddressToOffset(v, &voff) != 0) {
+		rc = RSXKIT_ENOMEM;
+		goto out;
+	}
+	/* Un cuadrado de CELL × CELL por caso, en dos triángulos. */
+	for (int i = 0; i < RSXKIT_DSTA_TEST_N; i++) {
+		static const float corner[6][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+		for (int k = 0; k < 6; k++) {
+			rsxkit_vertex *p = &v[6 * i + k];
+			memset(p, 0, sizeof *p);
+			p->pos[0] = (float)(CELL * (i + corner[k][0]));
+			p->pos[1] = (float)(CELL * corner[k][1]);
+			p->pos[2] = 0.5f;
+			p->pos[3] = 1.0f;
+			memset(p->rgba, 0xFF, sizeof p->rgba);
+		}
+	}
+	if ((rc = rsxkit_bind(t, NULL, (float)W, (float)H)) != RSXKIT_OK)
+		goto out;
+	rsxkit_clear(RSXKIT_CLEAR_COLOR, DSTA_TEST_DST << 24 | 0x204060u, 1.0f, NULL);
+	rsxkit_vertices(voff, RSXKIT_MEM_LOCAL);
+	for (int i = 0; i < RSXKIT_DSTA_TEST_N; i++) {
+		rsxkit_draw d;
+		memset(&d, 0, sizeof d);
+		d.blend = dsta_case[i].blend;
+		d.dst_alpha = dsta_case[i].dsta;
+		d.alpha_ref = dsta_case[i].ref;
+		d.cull = RSXKIT_CULL_NONE;
+		d.scissor[2] = (float)W;
+		d.scissor[3] = (float)H;
+		d.k[RSXKIT_K_ONE][0][0] = 1.0f;
+		d.k[RSXKIT_K_ONE][0][1] = 0.5f;
+		d.k[RSXKIT_K_ONE][0][2] = 0.25f;
+		d.k[RSXKIT_K_ONE][0][3] = dsta_case[i].a / 255.0f;
+		rsxkit_draw_triangles(&d, 6u * (uint32_t)i, 6);
+	}
+	rsxkit_fence_wait(rsxkit_fence());
+	/* A8R8G8B8 en big-endian: el primer byte de cada píxel es el alfa. */
+	for (int i = 0; i < RSXKIT_DSTA_TEST_N; i++)
+		out[i] = ((const volatile uint8_t *)t->mem)[(CELL / 2) * t->pitch + (CELL * i + CELL / 2) * 4];
+out:
+	rsxkit_3d_forget_vertices();
+	rsxkit_leave_3d();
+	if (v) {
+		rsxkit_finish();
+		rsxFree(v);
+	}
+	rsxkit_target_destroy(t);
+	return rc;
+}

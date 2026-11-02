@@ -207,6 +207,13 @@ void rsxkit_leave_3d(void)
 	d3.c_valid = 0;
 }
 
+void rsxkit_3d_forget_vertices(void)
+{
+	d3.vb_set = 0;
+	d3.prev_set = 0;
+	rsxkit_g.arrays_bound = 0;
+}
+
 void rsxkit_vertices(uint32_t offset, uint8_t location)
 {
 	struct rsxkit_state *g = &rsxkit_g;
@@ -287,12 +294,18 @@ static void fixed_state(void)
 	g->state_valid = 1;
 }
 
+/* La pasada del alfa de un dibujo con RSXKIT_DSTA_ONE (dsta.c): sin mezcla
+ * y con la máscara de color en el alfa solo. */
+#define DSTA_ALPHA_ONLY RSXKIT_DSTA_PASS
+
 /* El alfa que queda en un destino con alfa (rsxkit_bound.alpha), según
- * rsxkit_draw.dst_alpha y con cualquier mezcla del color: 1 (factor
- * GCM_CONSTANT_ALPHA con el color de mezcla en alfa 1: un factor ONE / ZERO
- * copia el alfa del fragmento, no da 1), el del fragmento (ONE / ZERO), el
- * del destino (la máscara de color sin el alfa) o el mayor de los dos
- * (ecuación MAX, que no mira los factores). Sin alfa en el destino, el
+ * rsxkit_draw.dst_alpha y con cualquier mezcla del color: el del fragmento
+ * (factores ONE / ZERO del canal alfa), el del destino (la máscara de color
+ * sin el alfa) o el mayor de los dos (ecuación MAX, que no mira los
+ * factores). La mezcla no puede dar una constante: el canal alfa sale de
+ * As·fs + Ad·fd y todos los factores multiplican (GCM_CONSTANT_ALPHA da
+ * As·Ac, no Ac). RSXKIT_DSTA_ONE lo resuelve rsxkit_draw_triangles con dos
+ * pasadas; aquí vale como el del fragmento. Sin alfa en el destino, el
  * canal de alfa de la mezcla no cuenta (ZERO / ONE). Las mezclas con
  * máximo o mínimo del alfa (ALPHA_MAX, REPLACE_MIN_ALPHA, KEEP_MIN_ALPHA)
  * traen su propia cuenta y no miran dst_alpha. */
@@ -300,28 +313,26 @@ static void set_blend(uint8_t blend, uint8_t dsta)
 {
 	gcmContextData *ctx = rsxkit_g.ctx;
 	int alpha = rsxkit_bound.alpha;
-	if (!alpha || dsta > RSXKIT_DSTA_MAX)
-		dsta = RSXKIT_DSTA_ONE;  /* sin alfa no cuenta: una sola clave */
+	if (!alpha || dsta > DSTA_ALPHA_ONLY)
+		dsta = RSXKIT_DSTA_FRAG;  /* sin alfa no cuenta: una sola clave */
+	if (dsta == RSXKIT_DSTA_ONE)
+		dsta = RSXKIT_DSTA_FRAG;
+	if (dsta == DSTA_ALPHA_ONLY)
+		blend = RSXKIT_BLEND_OFF;
 	uint8_t key = (uint8_t)(blend | dsta << 5);
 	if (key == d3.blend)
 		return;
 	d3.blend = key;
 	bool own = blend == RSXKIT_BLEND_ALPHA_MAX || blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA ||
 		   blend == RSXKIT_BLEND_KEEP_MIN_ALPHA;
-	/* Factores del canal alfa en las mezclas que no traen los suyos. */
-	u16 sa = GCM_ZERO, da = GCM_ONE;
-	if (alpha && dsta == RSXKIT_DSTA_FRAG) {
-		sa = GCM_ONE;
-		da = GCM_ZERO;
-	} else if (alpha && dsta == RSXKIT_DSTA_ONE) {
-		sa = GCM_CONSTANT_ALPHA;
-		da = GCM_ZERO;
-		rsxSetBlendColor(ctx, 0xFF000000u, 0);
-	}
+	bool max = !own && alpha && dsta == RSXKIT_DSTA_MAX;
+	/* Factores del canal alfa en las mezclas que no traen los suyos: el del
+	 * fragmento en un destino con alfa, el del destino en uno sin alfa. */
+	u16 sa = alpha ? GCM_ONE : GCM_ZERO, da = alpha ? GCM_ZERO : GCM_ONE;
 	/* La ecuación del alfa: máximo o mínimo en las mezclas que lo piden (y
 	 * con RSXKIT_DSTA_MAX) y suma en las demás (fixed_state la deja en suma). */
 	rsxSetBlendEquation(ctx, GCM_FUNC_ADD,
-			    blend == RSXKIT_BLEND_ALPHA_MAX || (!own && alpha && dsta == RSXKIT_DSTA_MAX) ? GCM_FUNC_MAX
+			    blend == RSXKIT_BLEND_ALPHA_MAX || max ? GCM_FUNC_MAX
 			    : (blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA || blend == RSXKIT_BLEND_KEEP_MIN_ALPHA)
 				    ? GCM_FUNC_MIN
 				    : GCM_FUNC_ADD);
@@ -367,18 +378,21 @@ static void set_blend(uint8_t blend, uint8_t dsta)
 		mask = 0;
 		break;
 	default:
-		/* Sin mezcla del color: la mezcla solo hace falta para el alfa 1 o
-		 * el mayor; el del fragmento y el del destino salen sin ella. */
-		if (alpha && (dsta == RSXKIT_DSTA_ONE || dsta == RSXKIT_DSTA_MAX)) {
+		/* Sin mezcla del color: solo el mayor necesita la mezcla. */
+		if (max) {
 			rsxSetBlendEnable(ctx, GCM_TRUE);
-			rsxSetBlendFunc(ctx, GCM_ONE, GCM_ZERO, sa, da);
+			rsxSetBlendFunc(ctx, GCM_ONE, GCM_ZERO, GCM_ONE, GCM_ONE);
 		} else {
 			rsxSetBlendEnable(ctx, GCM_FALSE);
 		}
 		break;
 	}
-	if (alpha && dsta == RSXKIT_DSTA_KEEP && !own)
-		mask &= ~(u32)GCM_COLOR_MASK_A;
+	if (alpha && !own && mask) {
+		if (dsta == RSXKIT_DSTA_KEEP)
+			mask &= ~(u32)GCM_COLOR_MASK_A;
+		else if (dsta == DSTA_ALPHA_ONLY)
+			mask = GCM_COLOR_MASK_A;
+	}
 	rsxSetColorMask(ctx, mask);
 }
 
@@ -586,7 +600,7 @@ static void set_constants(const rsxkit_draw *d, const struct vprog *p)
 	}
 }
 
-void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
+static void draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 {
 	struct rsxkit_state *g = &rsxkit_g;
 	gcmContextData *ctx = g->ctx;
@@ -716,4 +730,46 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		if (program_sync_per_draw) rsxkit_program_used_3d(d->program);
 		else d3.program_pending = 1;
 	}
+}
+
+/* Contadores de la pasada del alfa (rsxkit_dsta_stats). */
+static uint32_t dsta_passes, dsta_single, dsta_failed;
+
+void rsxkit_dsta_stats(uint32_t *passes, uint32_t *single, uint32_t *failed)
+{
+	*passes = dsta_passes;
+	*single = dsta_single;
+	*failed = dsta_failed;
+}
+
+void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
+{
+	bool own = d->blend == RSXKIT_BLEND_ALPHA_MAX || d->blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA ||
+		   d->blend == RSXKIT_BLEND_KEEP_MIN_ALPHA || d->blend == RSXKIT_BLEND_NONE;
+	if (!count || !rsxkit_bound.target || !rsxkit_bound.alpha || d->dst_alpha != RSXKIT_DSTA_ONE || own) {
+		draw_triangles(d, first, count);
+		return;
+	}
+	/* RSXKIT_DSTA_ONE en un destino con alfa: si el alfa del fragmento ya
+	 * es 1, una pasada que lo deja tal cual; si no, primero la del alfa
+	 * (rsxkit_dsta_alpha_pass, sin escribir la profundidad: las dos ven la
+	 * misma) y después el dibujo sin tocar el alfa (RSXKIT_DSTA_KEEP;
+	 * ninguna mezcla del color lee el alfa del destino). */
+	rsxkit_draw a = *d;
+	if (rsxkit_dsta_alpha_is_one(d)) {
+		a.dst_alpha = RSXKIT_DSTA_FRAG;
+		dsta_single++;
+		draw_triangles(&a, first, count);
+		return;
+	}
+	rsxkit_draw b;
+	if (rsxkit_dsta_alpha_pass(d, &b)) {
+		draw_triangles(&b, first, count);
+		dsta_passes++;
+		a.dst_alpha = RSXKIT_DSTA_KEEP;
+	} else {
+		a.dst_alpha = RSXKIT_DSTA_FRAG;  /* lo que se puede: el del fragmento */
+		dsta_failed++;
+	}
+	draw_triangles(&a, first, count);
 }
