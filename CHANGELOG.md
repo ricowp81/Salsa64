@@ -18,6 +18,14 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
   graphics path. The file `conker-ucode-viejo` in `/dev_hdd0/salsa64/` restores
   the old name-only detection.
 
+- **FIFA 99: the picture shook up and down in the menus and during matches**
+  (#69). The game shows interlaced 512 × 384 and 480 × 360 frames scaled to the
+  full screen, starting each field one line lower and alternating between two
+  buffers. Each field was shown on its own, so the image moved one line every
+  field. These scaled full frames are now woven like the 640 × 480 ones of
+  Indiana Jones. Resident Evil 2 and Rogue Squadron use the same kind of mode
+  and should stop shaking too. The file `vi-escalado-campos` in
+  `/dev_hdd0/salsa64/` restores the field-by-field presentation.
 - **FIFA 99: the screen stayed black after a match when choosing Continue**
   (#69). When the game switches from the 512 × 384 menu framebuffers to the
   480 × 360 match framebuffers it frees the old ones and allocates new heap

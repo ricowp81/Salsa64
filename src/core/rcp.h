@@ -437,6 +437,9 @@ struct salsa64_vi {
 	uint64_t field_cycles;  /* duración del campo en curso */
 	struct salsa64_sched *sched;
 	bool bob_full_frame;    /* diagnóstico: conservar campos en cuadros completos */
+	/* Los cuadros completos escalados (Y_SCALE entre 1 y 2: FIFA 99) vuelven
+	 * a presentarse por campos, como hasta la v0.2.15 (vi-escalado-campos). */
+	bool bob_scaled_frame;
 };
 
 /* Imagen que saca el VI: la parte visible del framebuffer en la RDRAM. */

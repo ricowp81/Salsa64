@@ -4130,6 +4130,7 @@ int main(int argc, char **argv)
 	}
 	salsa64_n64_init(&n64, rdram, ram);
 	n64.bus.vi.bob_full_frame = salsa64_host_env_on("SALSA64_VI_CAMPOS");
+	n64.bus.vi.bob_scaled_frame = salsa64_host_env_on("SALSA64_VI_ESCALADO_CAMPOS");
 	bool si_immediate = salsa64_host_env_on("SALSA64_SI_INMEDIATO");
 	salsa64_si_set_immediate(&n64.bus, si_immediate);
 	if (si_immediate)
@@ -4434,15 +4435,25 @@ int main(int argc, char **argv)
 			salsa64_n64_run_field(&n64);
 			field_done(gfx_path, frame_every);
 			struct salsa64_vi_frame f;
-			if (trace_vi && salsa64_vi_frame(&n64.bus, &f))
-				fprintf(stderr, "campo %u: origen %06x %ux%u stride %u bpp %u vpos %u (V_VIDEO %08x Y_SCALE %08x)\n",
+			uint32_t pa, pw, py0, ph;
+			if (salsa64_vi_frame(&n64.bus, &f)) {
+				fprintf(stderr, "campo %u: origen %06x %ux%u stride %u bpp %u vpos %u%s (bit de campo %u; CONTROL %08x "
+					"WIDTH %u H_VIDEO %08x V_VIDEO %08x X_SCALE %08x Y_SCALE %08x)\n",
 					n64.bus.vi.fields, f.origin, f.width, f.height, f.stride, f.bpp, f.vpos,
-					n64.bus.vi.regs[SALSA64_VI_V_VIDEO], n64.bus.vi.regs[SALSA64_VI_Y_SCALE]);
-			else if (trace_vi)
+					f.weave ? " tejido" : "", n64.bus.vi.field & 1, n64.bus.vi.regs[SALSA64_VI_CONTROL],
+					n64.bus.vi.regs[SALSA64_VI_WIDTH], n64.bus.vi.regs[SALSA64_VI_H_VIDEO],
+					n64.bus.vi.regs[SALSA64_VI_V_VIDEO], n64.bus.vi.regs[SALSA64_VI_X_SCALE],
+					n64.bus.vi.regs[SALSA64_VI_Y_SCALE]);
+				/* Con el rasterizador (--gfx-frame), lo que presentaría la PS3. */
+				if (gfx.raster && raster_last_present(&pa, &pw, &py0, &ph))
+					fprintf(stderr, "campo %u: se presenta %06x/%u desde la fila %u, %u filas\n",
+						n64.bus.vi.fields, pa, pw, py0, ph);
+			} else {
 				fprintf(stderr, "campo %u: sin imagen (CONTROL %08x ORIGIN %06x WIDTH %u H_VIDEO %08x V_VIDEO %08x)\n",
 					n64.bus.vi.fields, n64.bus.vi.regs[SALSA64_VI_CONTROL],
 					n64.bus.vi.regs[SALSA64_VI_ORIGIN] & 0xFFFFFF, n64.bus.vi.regs[SALSA64_VI_WIDTH],
 					n64.bus.vi.regs[SALSA64_VI_H_VIDEO], n64.bus.vi.regs[SALSA64_VI_V_VIDEO]);
+			}
 		} else if (pads.n || pokes.n || gfx.raster || state_saves.n || stop_field || hp.on || reset_at || nmi_at_opt ||
 			   ritmo_every) {
 			/* Con controles programados, campo por campo: el control cambia

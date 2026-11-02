@@ -72,6 +72,35 @@
   desde su estado (o desde la partida tras el ascensor), y con `conker-ucode-viejo` para ver la
   falla de antes.
 
+## 2026-11-02 — #69, FIFA 99: la imagen vibra (cuadros completos escalados y entrelazados)
+
+- Reporte (PS3, paquete con el arreglo del espejo): la imagen de FIFA vibra en el menú y en el
+  partido; el log dice «cuadros entrelazados completos tejidos (vi-campos)», o sea el tejido de
+  #39 activo.
+- VI por campo (`salsa64-run --trace-vi`, que ahora da CONTROL, WIDTH, H/V_VIDEO, X/Y_SCALE, el
+  bit de campo y, con `--gfx-frame`, lo que presentaría la PS3): menús 512 × 384 a Y_SCALE 1,6
+  (0x02000666, 379 renglones) y partido 480 × 360 a 1,5 (0x02000600, 356), SERRATE, dos búferes.
+  En los campos impares el origen está en la fila 1 del búfer y V_VIDEO es 0x002301FD; en los
+  pares, en la fila 2 y 0x002501FF; y casi cada campo es del otro búfer. ares (GDB, 24 muestras
+  en la intro y la demostración) da el mismo emparejamiento. En la consola los dos campos ponen
+  la misma fila del búfer en el mismo renglón de la pantalla (a 0,2–0,25 filas): la imagen está
+  quieta.
+- Causa: el tejido de #39 solo reconoce 640 × 480 a Y_SCALE 2,0 con 400 renglones o más; FIFA no
+  entra, y la ventana común solo se sostenía dentro de un mismo búfer: en la PS3 cada campo se
+  presentaba desde su fila (1, 2, 1, 2…: en el menú 30 saltos en 30 campos, en el partido 7 de
+  11), una fila de 360 arriba y abajo a 60 Hz.
+- Arreglo (`core/vi.c`): también es un cuadro completo un búfer contiguo leído a Y_SCALE entre 1 y
+  2 (cada renglón del campo avanza más de una fila): `weave`, vpos sin el bit de campo y la misma
+  ventana aunque cambie el búfer. Interruptor `vi-escalado-campos` (en el host,
+  `SALSA64_VI_ESCALADO_CAMPOS=1`); `vi-campos` sigue apagando los dos. Con el arreglo, 0 saltos en
+  el menú y en el partido (fila 1 siempre).
+- Otros juegos, 2400 campos desde el arranque sin tocar el control, con y sin el cambio:
+  Indiana Jones, GoldenEye, Perfect Dark, Racer y Donkey Kong 64 presentan exactamente lo mismo en
+  cada campo. Cambian, con el mismo patrón que FIFA: Resident Evil 2 (436 × 382 a 1,75, filas 0/1;
+  saltos de 604 a 8) y Rogue Squadron (640 × 335 a 1,53, dos búferes; de 1856 a 7), donde la
+  imagen también debía vibrar. Pruebas `scaled_interlaced_frame` (test_vi) y
+  `targets_present_scaled_interlaced` (test_targets, con la secuencia del partido). Falta la PS3.
+
 ## 2026-11-02 — #69, FIFA 99: pantalla negra con «Continue» tras el partido (espejo del framebuffer)
 
 - Reporte (v0.2.15, HEN): al acabar un partido y darle a continuar, pantalla negra. En el log, 13
