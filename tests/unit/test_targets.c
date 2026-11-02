@@ -919,6 +919,75 @@ static void targets_present_full_interlaced(void)
 	}
 }
 
+/* FIFA 99 (#69): dos búferes de 480 × 360 (y de 512 × 384 en los menús)
+ * que el VI muestra a Y_SCALE 1,5 (1,6): cada campo puede ser del otro
+ * búfer, con el origen en la fila 1 (campo impar, V_VIDEO 0x23) o en la 2
+ * (par, 0x25). Los orígenes y campos son los de salsa64-run --trace-vi en el
+ * partido (campos 5501–5513, iguales en ares). Tejido, la ventana se queda
+ * en la fila 1; por campos (vi-escalado-campos) saltaba 1 ↔ 2 cada campo. */
+static void targets_present_scaled_interlaced(void)
+{
+	static const struct { uint32_t base[2], width, lh, height; } m[2] = {
+		{ { 0x157640, 0x1abcc0 }, 480, 360, 356 },
+		{ { 0x157640, 0x1b76c0 }, 512, 384, 379 },
+	};
+	/* (búfer, campo) de los campos 5501–5513 del partido. */
+	static const uint8_t seq[13][2] = {
+		{ 0, 1 }, { 1, 0 }, { 0, 1 }, { 1, 0 }, { 0, 1 }, { 0, 0 }, { 1, 1 },
+		{ 0, 0 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, { 1, 0 }, { 0, 1 },
+	};
+	bool fresh;
+	struct rdp_present p;
+	for (unsigned mi = 0; mi < 2; mi++) {
+		for (unsigned legacy = 0; legacy < 2; legacy++) {
+			rdp_targets_init(&s);
+			int slot[2];
+			for (unsigned i = 0; i < 2; i++) {
+				slot[i] = rdp_targets_get(&s, m[mi].base[i], m[mi].width, SIZ_16b, m[mi].lh, &fresh);
+				rdp_targets_drawn(&s, slot[i]);
+			}
+			unsigned jumps = 0, prev = 0, want_jumps = 0, want_prev = 0;
+			for (unsigned n = 0; n < 13; n++) {
+				unsigned b = seq[n][0], odd = seq[n][1];
+				struct salsa64_vi_frame f = frame(m[mi].base[b] + m[mi].width * 2 * (odd ? 1 : 2), m[mi].width,
+								  m[mi].height);
+				/* Lo que da salsa64_vi_frame (test_vi.c, scaled_interlaced_frame). */
+				f.weave = !legacy;
+				f.vpos = odd ? 0x23 + legacy : 0x25;
+				rdp_targets_present(&s, &f, 100 + n, &p);
+				CHECK_EQ(p.slot, slot[b]);
+				CHECK_EQ(p.h, m[mi].height);
+				/* Por campos, la ventana solo se sostenía dentro del mismo
+				 * búfer: un campo par que sigue al otro búfer salía de la fila 2. */
+				unsigned want = !legacy || odd || (n && seq[n - 1][0] == b) ? 1 : 2;
+				CHECK_EQ(p.y0, want);
+				jumps += n && p.y0 != prev;
+				want_jumps += n && want != want_prev;
+				prev = p.y0;
+				want_prev = want;
+			}
+			CHECK_EQ(jumps, want_jumps);
+			CHECK_EQ(jumps, legacy ? 8u : 0u);
+		}
+	}
+	/* Rogue Squadron (un solo búfer, Y_SCALE 1,33): tejido también queda en
+	 * la fila 1, como por campos. */
+	const uint32_t ROGUE = 0x790000;
+	rdp_targets_init(&s);
+	int g = rdp_targets_get(&s, ROGUE, 640, SIZ_16b, 335, &fresh);
+	rdp_targets_drawn(&s, g);
+	for (uint32_t n = 0; n < 6; n++) {
+		bool second = n & 1;
+		struct salsa64_vi_frame f = frame(ROGUE + 1280 * (1 + second), 640, 316);
+		f.weave = true;
+		f.vpos = second ? 0x35 : 0x33;
+		rdp_targets_present(&s, &f, 60 + n, &p);
+		CHECK_EQ(p.slot, g);
+		CHECK_EQ(p.y0, 1);
+		CHECK_EQ(p.h, 316);
+	}
+}
+
 /* Color image de 320 × 720 (Star Fox 64): los tres framebuffers seguidos
  * caben enteros dentro, con sus filas de inicio; otro ancho, no. */
 static void targets_inside(void)
@@ -1287,6 +1356,7 @@ void t_suite_targets(void)
 	RUN(targets_present_interlaced);
 	RUN(targets_present_interlaced_vpos);
 	RUN(targets_present_full_interlaced);
+	RUN(targets_present_scaled_interlaced);
 	RUN(targets_locate);
 	RUN(targets_decode_rgba16);
 	RUN(targets_texture_policy);

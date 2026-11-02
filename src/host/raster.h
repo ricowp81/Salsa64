@@ -93,6 +93,10 @@ extern float raster_edge_factor, raster_edge_units;  /* su desplazamiento hacia 
 /* Cada campo con imagen: el origen y ancho del VI (como salsa64_rdp_vi). */
 struct salsa64_vi_frame;
 void raster_vi(const struct salsa64_vi_frame *f);
+/* Lo que eligió la última presentación (rdp_targets_present, como la PS3):
+ * el destino (dirección y ancho), la fila desde la que se presenta y cuántas.
+ * false si no se presentó nada. Para --trace-vi. */
+bool raster_last_present(uint32_t *addr, uint32_t *width, uint32_t *y0, uint32_t *h);
 /* Vuelve al estado del arranque: tabla de destinos, imágenes y cuentas
  * (pruebas unitarias; salsa64-run no lo necesita). */
 void raster_reset(void);
