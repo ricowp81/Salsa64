@@ -4183,6 +4183,10 @@ int main(int argc, char **argv)
 	gfx_sync.backend.eurocom = !eurocom || strcmp(eurocom, "0");
 	fprintf(stderr, "salsa64-run: HLE Eurocom %s (SALSA64_GFX_EUROCOM=0 la apaga)\n",
 		gfx_sync.backend.eurocom ? "activa" : "apagada");
+	/* Conker (#68): conker-ucode-viejo en la PS3. */
+	gfx_sync.backend.conker_text_only = salsa64_host_env_on("SALSA64_GFX_CONKER_VIEJO");
+	if (gfx_sync.backend.conker_text_only)
+		fprintf(stderr, "salsa64-run: microcódigo de Conker solo por su texto (SALSA64_GFX_CONKER_VIEJO)\n");
 	salsa64_rsp_set_gfx(&n64.bus, &gfx_sync.backend);
 	if (getenv("SALSA64_GFX_LATE")) {
 		gfx_late.polls = (unsigned)strtoul(getenv("SALSA64_GFX_LATE"), NULL, 0);
@@ -4196,6 +4200,7 @@ int main(int argc, char **argv)
 		gfx_late.backend.turbo3d = gfx_sync.backend.turbo3d;
 		gfx_late.backend.acclaim = gfx_sync.backend.acclaim;
 		gfx_late.backend.eurocom = gfx_sync.backend.eurocom;
+		gfx_late.backend.conker_text_only = gfx_sync.backend.conker_text_only;
 		salsa64_rsp_set_gfx(&n64.bus, &gfx_late.backend);
 	}
 	if (getenv("SALSA64_JITTER")) {
@@ -4207,6 +4212,7 @@ int main(int argc, char **argv)
 			gfx_late.backend.turbo3d = gfx_sync.backend.turbo3d;
 			gfx_late.backend.acclaim = gfx_sync.backend.acclaim;
 			gfx_late.backend.eurocom = gfx_sync.backend.eurocom;
+			gfx_late.backend.conker_text_only = gfx_sync.backend.conker_text_only;
 			salsa64_rsp_set_gfx(&n64.bus, &gfx_late.backend);
 		}
 	}

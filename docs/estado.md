@@ -1,5 +1,51 @@
 # Estado
 
+## 2026-11-02 — #68, Conker: tras el ascensor del final de Heist, cinemática rota y pantalla negra con líneas
+
+- Log de la PS3 (v0.2.15): todo el juego con «F3DEXBG.NoN fifo 2.08» (imagen Conker del SPE 0) hasta
+  la tarea 182 262, al tomar el ascensor: «cambio de imagen Conker → F3DEX2» y el microcódigo
+  «RSP Gfx ucode F3DEX.NoN fifo 2.08» **en la misma dirección (0x0bebb0) y con el mismo CRC-32 del
+  código** (99E222AC, 1B4ACE88 en palabras). Desde ahí no vuelve a la imagen Conker; tras dos
+  reinicios, el juego arranca con F3DEXBG y al cargar la partida pasa otra vez a F3DEX2. Ningún aviso
+  de destinos, copias, z ni del RSX que cambie en ese momento.
+- Reproducido en el host con el estado del reporte (su ROM era una traducción al español, de otra
+  cabecera; se cargó con la USA en una copia con esa cabecera, fuera del repo): con la HLE, 3952
+  comandos por tarea, 98 triángulos y **531 comandos sin implementar (último 0x18)**; la imagen es
+  negra con unas líneas, como en el reporte. Con `--lle=all`, la sala con Conker (2338 triángulos
+  por tarea, 0 sin implementar).
+- Causa: el juego trae un solo código de 4 KB y ocho segmentos de datos, «F3DEX», «F3DEXBS»,
+  «F3DEXBG» y «F3DEXBGBS», con y sin «.NoN» (en la ROM, cada 0x6C0 bytes), y copia el que toca en
+  un búfer fijo. Entre ellos solo cambian el texto, las constantes del recorte cercano (DMEM 0x1AC,
+  0x666, 0x6A6) y el largo de una carga de código (DMEM 0x6AC: 0x318 en BG, 0x388 en F3DEX, 0x3A0
+  en BS). La detección iba por el texto: «F3DEX.NoN fifo 2.08» se tomaba por un F3DEX2, que no
+  tiene G_TRI4 (0x10–0x1F): casi todos los triángulos quedaban sin dibujar y los vértices de 16
+  bytes con luces de Rare se leían como los de F3DEX2.
+- Que «F3DEX» y «F3DEXBG» son el mismo microcódigo para la HLE, medido con el LLE: en la cueva del
+  Poo (con «F3DEXBG.NoN»), el LLE con el largo de carga de «F3DEX» (DMEM 0x6AC = 0x388) da las 50
+  tareas bit a bit iguales que con el suyo, y el código de más (IMEM 0x5F0–0x65F) sí se ejecuta
+  (14 190 entradas). Al revés, en la escena del reporte el LLE con el largo de «F3DEXBG» se cuelga
+  en la segunda tarea (60 M de instrucciones): «F3DEX» vuelve a cargar esos 0x70 bytes porque allí
+  algo pisa la IMEM, y por eso el juego lo usa en esa parte.
+- Arreglo (`core/rsp.c`): el código de Conker se reconoce por el CRC-32 de sus 4 KB (palabras al
+  revés 0x1B4ACE88) antes que el texto, y cualquiera de las ocho variantes va a F3DEXBG (imagen
+  Conker del SPE 0, sin cambio de imagen); sin recorte cercano si el nombre dice «.No» («F3DEXBGBS.No»
+  no cabe entero). El CRC de los 4 KB se calcula una vez por tarea para las tres variantes por
+  código (Acclaim, Eurocom, Conker), antes eran dos cálculos. Interruptor `conker-ucode-viejo` en
+  `/dev_hdd0/salsa64/` (en el host, `SALSA64_GFX_CONKER_VIEJO=1`): solo el texto, como antes.
+- Antes y después contra el LLE (mismo estado, 300 y 1800 campos sin tocar el control): con el
+  arreglo, la sala, Conker y los objetos en su sitio (0 comandos sin implementar, 1156 triángulos
+  por tarea); `--lle-check-gfx` da 50 de 50 tareas «distintas», del mismo tipo que el resto de
+  Conker con «F3DEXBG.NoN» (luz de la HLE más baja que la del LLE: razón HLE/LLE por canal 0,92,
+  0,84, 0,77 en esta sala; 0,80, 0,79 en la cueva del Poo y 0,97, 0,96, 0,99 en la entrada del
+  maizal, las dos con «F3DEXBG.NoN» y 50 de 50 «distintas» también). Sin ares: el estado no se
+  puede llevar a ares y no hay partida del reportero para llegar a esa sala.
+- Otros juegos: las 8 escenas del host (`tools/escenas-host.sh`) idénticas a main; Conker con
+  «F3DEXBG.NoN» (título, Chapters, maizal y cueva del Poo, estados de #3) idéntico a main.
+- Prueba: `rsp_detect_gbi_conker` (las ocho variantes con el CRC: F3DEXBG y su plano cercano; con
+  el interruptor, el texto; otro código con el mismo texto, F3DEX2). Falta la PS3: el reportero,
+  desde su estado (o desde la partida tras el ascensor), y con `conker-ucode-viejo` para ver la
+  falla de antes.
+
 ## 2026-10-31 — #3, Conker: el Great Mighty Poo no abre la boca (PLAY sin confirmar, arreglo por juego)
 
 - Reproducido en el host con el estado de la ronda anterior en Chapters (partida nueva,

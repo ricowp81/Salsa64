@@ -159,6 +159,10 @@ struct salsa64_gfx_backend {
 	bool turbo3d; /* familia experimental: apagada salvo petición explícita */
 	bool acclaim; /* variante optativa: solo se reconoce por CRC cuando está activa */
 	bool eurocom; /* variante optativa: solo se reconoce por CRC cuando está activa */
+	/* Interruptor conker-ucode-viejo: el microcódigo de Conker solo por su
+	 * texto («F3DEXBG»), como antes de #68; si no (por omisión), también sus
+	 * otras variantes («F3DEX.NoN»…), por el CRC de su código (rsp.c). */
+	bool conker_text_only;
 };
 
 /* ABI de las listas de audio (alist): cada microcódigo de audio numera y

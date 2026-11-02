@@ -487,29 +487,51 @@ static bool gfx_ucode_nonear(const uint8_t *q, const uint8_t *end)
 	return false;
 }
 
-/* La variante Acclaim comparte el texto de F3DEX2: solo se distingue por
- * los 4 KB de código y solo cuando el interruptor optativo está activo. */
-static bool acclaim_ucode(const struct salsa64_bus *bus, const struct salsa64_task *task)
+/* Variantes de F3DEX2 que solo se distinguen por los 4 KB de código (CRC-32
+ * en palabras al revés, como ucode_crcs_w). */
+#define ACCLAIM_CRC_W 0xE44DF568u
+#define EUROCOM_CRC_W 0xC6121CAAu
+#define CONKER_CRC_W 0x1B4ACE88u /* 0x99E222AC con los bytes tal cual */
+
+/* El CRC-32 (palabras al revés) de los 4 KB de código de la tarea, o 0 si no
+ * carga 4 KB de la RDRAM o ninguna variante que lo mira está activa: una sola
+ * vez por tarea para todas. */
+static uint32_t code_crc_w(const struct salsa64_bus *bus, const struct salsa64_task *task)
 {
-	if (!bus->rsp.gfx || !bus->rsp.gfx->acclaim)
-		return false;
+	const struct salsa64_gfx_backend *gfx = bus->rsp.gfx;
+	if (!gfx || !(gfx->acclaim || gfx->eurocom || !gfx->conker_text_only))
+		return 0;
 	uint32_t addr = task->ucode & 0x1FFFFFFFu;
 	uint32_t size = task->ucode_size ? task->ucode_size : 0x1000u;
-	return size == 0x1000u && in_rdram(bus, addr, size) &&
-	       salsa64_crc32_words_swapped(bus->rdram + addr, size) == 0xE44DF568u;
+	return size == 0x1000u && in_rdram(bus, addr, size) ? salsa64_crc32_words_swapped(bus->rdram + addr, size) : 0;
+}
+
+/* La variante Acclaim comparte el texto de F3DEX2: solo se distingue por
+ * los 4 KB de código y solo cuando el interruptor optativo está activo. */
+static bool acclaim_ucode(const struct salsa64_bus *bus, uint32_t crc_w)
+{
+	return bus->rsp.gfx && bus->rsp.gfx->acclaim && crc_w == ACCLAIM_CRC_W;
 }
 
 /* Cruis'n Exotica conserva el texto de F3DEX2, pero usa G_SPECIAL_1 para
  * ejecutar bloques contados de comandos F3DEX2. Se distingue por el código, como
  * las demás variantes cuyo texto genérico no basta. */
-static bool eurocom_ucode(const struct salsa64_bus *bus, const struct salsa64_task *task)
+static bool eurocom_ucode(const struct salsa64_bus *bus, uint32_t crc_w)
 {
-	if (!bus->rsp.gfx || !bus->rsp.gfx->eurocom)
-		return false;
-	uint32_t addr = task->ucode & 0x1FFFFFFFu;
-	uint32_t size = task->ucode_size ? task->ucode_size : 0x1000u;
-	return size == 0x1000u && in_rdram(bus, addr, size) &&
-	       salsa64_crc32_words_swapped(bus->rdram + addr, size) == 0xC6121CAAu;
+	return bus->rsp.gfx && bus->rsp.gfx->eurocom && crc_w == EUROCOM_CRC_W;
+}
+
+/* Conker (#68): el juego trae un solo código y ocho segmentos de datos que
+ * se llaman «F3DEX», «F3DEXBS», «F3DEXBG» y «F3DEXBGBS», con y sin «.NoN».
+ * Entre ellos solo cambian el texto, las constantes del recorte cercano y
+ * una palabra (DMEM 0x6AC); todos traen G_TRI4, los vértices de 16 bytes y
+ * las luces de Rare. El juego usa «F3DEXBG.NoN» y, desde el ascensor del
+ * final de Heist, «F3DEX.NoN»: por su texto parecía un F3DEX2 y la HLE no
+ * dibujaba sus G_TRI4 (0x10–0x1F, «sin implementar»). El interruptor
+ * conker-ucode-viejo (conker_text_only) vuelve a mirar solo el texto. */
+static bool conker_ucode(const struct salsa64_bus *bus, uint32_t crc_w)
+{
+	return bus->rsp.gfx && !bus->rsp.gfx->conker_text_only && crc_w == CONKER_CRC_W;
 }
 
 static enum salsa64_gbi detect_gbi(const struct salsa64_bus *bus, const struct salsa64_task *task, bool *nonear);
@@ -585,11 +607,24 @@ static enum salsa64_gbi detect_gbi(const struct salsa64_bus *bus, const struct s
 	if (size > bus->rdram_size - addr)
 		size = bus->rdram_size - addr;
 	const uint8_t *p = bus->rdram + addr, *end = p + size;
-	/* Antes del texto genérico F3DEX2, que esta variante también trae. */
-	if (acclaim_ucode(bus, task))
+	/* Antes del texto genérico F3DEX2, que estas variantes también traen. */
+	const uint32_t crc_w = code_crc_w(bus, task);
+	if (acclaim_ucode(bus, crc_w))
 		return SALSA64_GBI_F3DEX2ACCLAIM;
-	if (eurocom_ucode(bus, task))
+	if (eurocom_ucode(bus, crc_w))
 		return SALSA64_GBI_F3DEX2EUROCOM;
+	if (conker_ucode(bus, crc_w)) {
+		/* Sin recorte cercano si el nombre dice «.No» («F3DEXBGBS.No» no
+		 * cabe entero en el texto; sus datos son los de «F3DEXBG.NoN»). */
+		const uint8_t *q = find(p, end, "RSP Gfx ucode ");
+		if (q)
+			for (q += 14; q + 3 <= end && *q > ' ' && *q < 0x7F; q++)
+				if (starts_with(q, end, ".No")) {
+					*nonear = true;
+					break;
+				}
+		return SALSA64_GBI_F3DEXBG;
+	}
 
 	/* ROMs de prueba de Salsa64 (sin microcódigo de Nintendo). */
 	if (find(p, end, "Salsa64 GBI Turbo3D") && bus->rsp.gfx && bus->rsp.gfx->turbo3d)
