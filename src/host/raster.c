@@ -1215,6 +1215,19 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 	}
 }
 
+static struct rdp_present last_present = { .slot = -1 };
+
+bool raster_last_present(uint32_t *addr, uint32_t *width, uint32_t *y0, uint32_t *h)
+{
+	if (last_present.slot < 0 || last_present.slot >= RDP_TARGETS_MAX || !tg.t[last_present.slot].used)
+		return false;
+	*addr = tg.t[last_present.slot].addr;
+	*width = tg.t[last_present.slot].width;
+	*y0 = last_present.y0;
+	*h = last_present.h;
+	return true;
+}
+
 void raster_vi(const struct salsa64_vi_frame *f)
 {
 	rdp_vi_ring_frame(&vi_ring, f);
@@ -1224,6 +1237,7 @@ void raster_vi(const struct salsa64_vi_frame *f)
 	 * no reproducía la política de la consola. */
 	struct rdp_present out;
 	rdp_targets_present(&tg, f, ++vi_field, &out);
+	last_present = out;
 	/* Como la PS3: un framebuffer dibujado que aún no se copió a la RDRAM
 	 * (no se sabía que lo era al terminar su tarea) se copia al
 	 * presentarlo, solo las filas que muestra el VI. */

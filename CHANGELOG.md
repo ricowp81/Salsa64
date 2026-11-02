@@ -7,6 +7,25 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
 ## [Unreleased]
 
 ### Fixed
+- **Conker's Bad Fur Day: after the elevator at the end of Heist the cutscene
+  was garbled and the game then showed a black screen with a few lines** (#68).
+  Conker ships one graphics microcode with eight data segments ("F3DEX",
+  "F3DEXBS", "F3DEXBG" and "F3DEXBGBS", with and without ".NoN") and switches
+  to "F3DEX.NoN" from that elevator on. The emulator recognised Conker's
+  microcode by its "F3DEXBG" name only, so that part of the game ran as plain
+  F3DEX2, which has no four-triangle command: almost nothing was drawn. Conker's
+  microcode is now recognised by its code, so every variant uses Conker's
+  graphics path. The file `conker-ucode-viejo` in `/dev_hdd0/salsa64/` restores
+  the old name-only detection.
+
+- **FIFA 99: the picture shook up and down in the menus and during matches**
+  (#69). The game shows interlaced 512 × 384 and 480 × 360 frames scaled to the
+  full screen, starting each field one line lower and alternating between two
+  buffers. Each field was shown on its own, so the image moved one line every
+  field. These scaled full frames are now woven like the 640 × 480 ones of
+  Indiana Jones. Resident Evil 2 and Rogue Squadron use the same kind of mode
+  and should stop shaking too. The file `vi-escalado-campos` in
+  `/dev_hdd0/salsa64/` restores the field-by-field presentation.
 - **FIFA 99: the screen stayed black after a match when choosing Continue**
   (#69). When the game switches from the 512 × 384 menu framebuffers to the
   480 × 360 match framebuffers it frees the old ones and allocates new heap
@@ -19,6 +38,13 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
   in the meantime. Saved states made during an affected match already carry
   the broken header: start a new match. The file `espejo-pisa-otras` in
   `/dev_hdd0/salsa64/` restores the old behaviour.
+
+- **Conker's Bad Fur Day: models flickered in and out during the fight in the
+  vault** (#68). The starfield seen through the airlock is drawn one star at a
+  time, and with the ship and the models a frame needed up to ~2900 draws; the
+  graphics output buffer held 2642, so the rest of the frame was dropped. The
+  buffer now holds 3170 draws; the extra space comes from the texture staging
+  area, so overall memory use does not change.
 - **Conker's Bad Fur Day (USA): the Great Mighty Poo did not open his mouth and
   Sweet Melody got stuck when entered straight from the Chapters menu** (#3).
   The game's music manager starts a song by sending PLAY to the sequence

@@ -872,11 +872,11 @@ static struct salsa64_lle_host lle_host;
 static enum salsa64_lle_mode lle_mode;
 static double lle_speed;
 static struct gfx_vertex gfx_vtx[1u << 16] __attribute__((aligned(128)));
-/* 1280 KB para los dibujos y, con GFX_JOB_INTERP (--interp), la mitad de eso
+/* 1536 KB para los dibujos y, con GFX_JOB_INTERP (--interp), la mitad de eso
  * más para los registros GFX_OP_VGROUP (un tercio del total, gfx.h), como
  * en la PS3 (src/rdp/rdp.c, CMD_BYTES y CMD_INTERP). */
 #ifndef GFX_CMD_DRAWS
-#define GFX_CMD_DRAWS (1280u << 10)
+#define GFX_CMD_DRAWS (1536u << 10)
 #endif
 static uint8_t gfx_cmd[GFX_CMD_DRAWS + GFX_CMD_DRAWS / (GFX_VGROUP_SHARE - 1)] __attribute__((aligned(128)));
 static uint8_t gfx_tex[4u << 20] __attribute__((aligned(128)));
@@ -925,6 +925,10 @@ static struct {
 	uint64_t tex_arena, tex_evicted;  /* aparte: en gfx_result son de 16 bits */
 	uint32_t tasks;
 	bool raster;
+	/* Lo más que una tarea llenó de cada búfer de salida (gfx_job: vértices,
+	 * comandos, texturas) y en qué campo, para dimensionar los de la PS3
+	 * (src/rdp/rdp.c); el de comandos con sus dibujos. */
+	uint32_t peak_vtx, peak_cmd, peak_tex, peak_draws, peak_vtx_field, peak_cmd_field, peak_tex_field;
 } gfx;
 
 /* Diagnóstico (SALSA64_GFX_LATE=N): la HLE lee la RDRAM al final de la
@@ -1626,6 +1630,12 @@ static void gfx_done(void *ctx, const struct gfx_job *job, const struct gfx_resu
 	ts_window();
 #endif
 	s->flags |= res->flags;
+	if (res->vtx_bytes > gfx.peak_vtx)
+		gfx.peak_vtx = res->vtx_bytes, gfx.peak_vtx_field = n64.bus.vi.fields;
+	if (res->cmd_bytes > gfx.peak_cmd)
+		gfx.peak_cmd = res->cmd_bytes, gfx.peak_draws = res->draws, gfx.peak_cmd_field = n64.bus.vi.fields;
+	if (res->tex_bytes > gfx.peak_tex)
+		gfx.peak_tex = res->tex_bytes, gfx.peak_tex_field = n64.bus.vi.fields;
 	s->commands += res->commands;
 	s->triangles += res->triangles;
 	s->rects += res->rects;
@@ -2940,6 +2950,11 @@ static void gfx_summary(void)
 		s->tex_reused / n, s->tex_old / n, gfx.tex_arena / n, gfx.tex_evicted / n,
 		s->unknown_cmds, s->last_unknown, s->skipped, s->bg, s->approx_cc, s->dl_errors, n64.bus.rsp.stats.cut,
 		s->flags);
+	fprintf(stderr, "salsa64-run: gfx: pico de una tarea en los búferes de salida: comandos %u de %u KB (%u dibujos, "
+		"campo %u), vértices %u de %u KB (campo %u), texturas %u de %u KB (campo %u)\n",
+		(gfx.peak_cmd + 1023) >> 10, (unsigned)(GFX_CMD_DRAWS >> 10), gfx.peak_draws, gfx.peak_cmd_field,
+		(gfx.peak_vtx + 1023) >> 10, (unsigned)(sizeof gfx_vtx >> 10), gfx.peak_vtx_field,
+		(gfx.peak_tex + 1023) >> 10, (unsigned)(sizeof gfx_tex >> 10), gfx.peak_tex_field);
 	char hist[256];
 	size_t used = 0;
 	hist[0] = '\0';
@@ -4115,6 +4130,7 @@ int main(int argc, char **argv)
 	}
 	salsa64_n64_init(&n64, rdram, ram);
 	n64.bus.vi.bob_full_frame = salsa64_host_env_on("SALSA64_VI_CAMPOS");
+	n64.bus.vi.bob_scaled_frame = salsa64_host_env_on("SALSA64_VI_ESCALADO_CAMPOS");
 	bool si_immediate = salsa64_host_env_on("SALSA64_SI_INMEDIATO");
 	salsa64_si_set_immediate(&n64.bus, si_immediate);
 	if (si_immediate)
@@ -4183,6 +4199,10 @@ int main(int argc, char **argv)
 	gfx_sync.backend.eurocom = !eurocom || strcmp(eurocom, "0");
 	fprintf(stderr, "salsa64-run: HLE Eurocom %s (SALSA64_GFX_EUROCOM=0 la apaga)\n",
 		gfx_sync.backend.eurocom ? "activa" : "apagada");
+	/* Conker (#68): conker-ucode-viejo en la PS3. */
+	gfx_sync.backend.conker_text_only = salsa64_host_env_on("SALSA64_GFX_CONKER_VIEJO");
+	if (gfx_sync.backend.conker_text_only)
+		fprintf(stderr, "salsa64-run: microcódigo de Conker solo por su texto (SALSA64_GFX_CONKER_VIEJO)\n");
 	salsa64_rsp_set_gfx(&n64.bus, &gfx_sync.backend);
 	if (getenv("SALSA64_GFX_LATE")) {
 		gfx_late.polls = (unsigned)strtoul(getenv("SALSA64_GFX_LATE"), NULL, 0);
@@ -4196,6 +4216,7 @@ int main(int argc, char **argv)
 		gfx_late.backend.turbo3d = gfx_sync.backend.turbo3d;
 		gfx_late.backend.acclaim = gfx_sync.backend.acclaim;
 		gfx_late.backend.eurocom = gfx_sync.backend.eurocom;
+		gfx_late.backend.conker_text_only = gfx_sync.backend.conker_text_only;
 		salsa64_rsp_set_gfx(&n64.bus, &gfx_late.backend);
 	}
 	if (getenv("SALSA64_JITTER")) {
@@ -4207,6 +4228,7 @@ int main(int argc, char **argv)
 			gfx_late.backend.turbo3d = gfx_sync.backend.turbo3d;
 			gfx_late.backend.acclaim = gfx_sync.backend.acclaim;
 			gfx_late.backend.eurocom = gfx_sync.backend.eurocom;
+			gfx_late.backend.conker_text_only = gfx_sync.backend.conker_text_only;
 			salsa64_rsp_set_gfx(&n64.bus, &gfx_late.backend);
 		}
 	}
@@ -4413,15 +4435,25 @@ int main(int argc, char **argv)
 			salsa64_n64_run_field(&n64);
 			field_done(gfx_path, frame_every);
 			struct salsa64_vi_frame f;
-			if (trace_vi && salsa64_vi_frame(&n64.bus, &f))
-				fprintf(stderr, "campo %u: origen %06x %ux%u stride %u bpp %u vpos %u (V_VIDEO %08x Y_SCALE %08x)\n",
+			uint32_t pa, pw, py0, ph;
+			if (salsa64_vi_frame(&n64.bus, &f)) {
+				fprintf(stderr, "campo %u: origen %06x %ux%u stride %u bpp %u vpos %u%s (bit de campo %u; CONTROL %08x "
+					"WIDTH %u H_VIDEO %08x V_VIDEO %08x X_SCALE %08x Y_SCALE %08x)\n",
 					n64.bus.vi.fields, f.origin, f.width, f.height, f.stride, f.bpp, f.vpos,
-					n64.bus.vi.regs[SALSA64_VI_V_VIDEO], n64.bus.vi.regs[SALSA64_VI_Y_SCALE]);
-			else if (trace_vi)
+					f.weave ? " tejido" : "", n64.bus.vi.field & 1, n64.bus.vi.regs[SALSA64_VI_CONTROL],
+					n64.bus.vi.regs[SALSA64_VI_WIDTH], n64.bus.vi.regs[SALSA64_VI_H_VIDEO],
+					n64.bus.vi.regs[SALSA64_VI_V_VIDEO], n64.bus.vi.regs[SALSA64_VI_X_SCALE],
+					n64.bus.vi.regs[SALSA64_VI_Y_SCALE]);
+				/* Con el rasterizador (--gfx-frame), lo que presentaría la PS3. */
+				if (gfx.raster && raster_last_present(&pa, &pw, &py0, &ph))
+					fprintf(stderr, "campo %u: se presenta %06x/%u desde la fila %u, %u filas\n",
+						n64.bus.vi.fields, pa, pw, py0, ph);
+			} else {
 				fprintf(stderr, "campo %u: sin imagen (CONTROL %08x ORIGIN %06x WIDTH %u H_VIDEO %08x V_VIDEO %08x)\n",
 					n64.bus.vi.fields, n64.bus.vi.regs[SALSA64_VI_CONTROL],
 					n64.bus.vi.regs[SALSA64_VI_ORIGIN] & 0xFFFFFF, n64.bus.vi.regs[SALSA64_VI_WIDTH],
 					n64.bus.vi.regs[SALSA64_VI_H_VIDEO], n64.bus.vi.regs[SALSA64_VI_V_VIDEO]);
+			}
 		} else if (pads.n || pokes.n || gfx.raster || state_saves.n || stop_field || hp.on || reset_at || nmi_at_opt ||
 			   ritmo_every) {
 			/* Con controles programados, campo por campo: el control cambia

@@ -10,10 +10,18 @@ el [radar de compatibilidad](compatibilidad/index.html). Sus datos están en
 
 Las entradas antiguas conservan sus métodos de prueba como historia.
 
+## 2026-11-02 — Reporte #68 (Conker's Bad Fur Day)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| Conker's Bad Fur Day | desde el ascensor del final de Heist, la sala y Conker se ven en el host como con el microcódigo real (falta la PS3) | ahí el juego cambia a su variante «F3DEX.NoN» (mismo código que «F3DEXBG.NoN»), que por el texto se tomaba por F3DEX2: sin G_TRI4, pantalla negra con líneas. Ahora el código de Conker se reconoce por su CRC (`1B4ACE88` en palabras); `conker-ucode-viejo` vuelve al texto. La luz de la HLE sigue algo más baja que la del microcódigo real, como en el resto del juego |
+| Conker's Bad Fur Day (pelea de la bóveda) | sin tareas cortadas en el host (falta la PS3) | las estrellas de la esclusa, un dibujo cada una, y la nave llegan a ~2900 dibujos por tarea; el búfer de comandos pasa de 1280 a 1536 KB (3170 dibujos), sacados del arena de texturas |
+
 ## 2026-11-02 — Reporte #69 (FIFA 99)
 
 | Juego | Estado | Notas |
 |---|---|---|
+| FIFA 99 (USA) | imagen quieta en el menú y el partido en el host (antes la ventana presentada saltaba una fila cada campo; falta la PS3) | cuadros entrelazados escalados (512 × 384 a 1,6 y 480 × 360 a 1,5, dos búferes): se tejen como los de 640 × 480 (`vi-escalado-campos` vuelve a por campos). Resident Evil 2 (436 × 382) y Rogue Squadron (640 × 335) cambian igual |
 | FIFA 99 (USA) | «Continue» tras el partido sigue a la tabla de posiciones en el host con el estado del reporte y la cabecera del heap repuesta (falta la PS3) | en la PS3, el espejo del último cuadro del menú (512 × 384) pisaba la cabecera de un bloque del heap que el juego ya había puesto detrás del framebuffer del partido (480 × 360); al acabar el partido, al soltar ese bloque, AdEL y pantalla negra. El espejo ya no escribe lo que otra color image dibujó después (`espejo-pisa-otras` vuelve a como antes). El estado del reporte ya trae la cabecera rota: hay que jugar un partido nuevo |
 
 ## 2026-10-31 — Reporte #62 (Dr. Mario 64)

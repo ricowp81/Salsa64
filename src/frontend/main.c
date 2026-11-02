@@ -5722,8 +5722,10 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 	memset(rdram, 0, SALSA64_RDRAM_MAX);  /* cada juego arranca igual, venga después del que venga */
 	salsa64_n64_init(&n64, rdram, SALSA64_RDRAM_MAX);
 	n64.bus.vi.bob_full_frame = file_exists(SALSA64_DATA_DIR "/vi-campos");
-	salsa64_log("VI: cuadros entrelazados completos %s (vi-campos)",
-		    n64.bus.vi.bob_full_frame ? "por campos" : "tejidos");
+	n64.bus.vi.bob_scaled_frame = file_exists(SALSA64_DATA_DIR "/vi-escalado-campos");
+	salsa64_log("VI: cuadros entrelazados completos %s (vi-campos); escalados %s (vi-escalado-campos)",
+		    n64.bus.vi.bob_full_frame ? "por campos" : "tejidos",
+		    n64.bus.vi.bob_full_frame || n64.bus.vi.bob_scaled_frame ? "por campos" : "tejidos");
 	bool si_immediate = file_exists(SALSA64_DATA_DIR "/sin-si-diferido");
 	bool si_fixed = file_exists(SALSA64_DATA_DIR "/si-ritmo-viejo");
 	salsa64_si_set_immediate(&n64.bus, si_immediate);
@@ -5780,6 +5782,10 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 	salsa64_log("gfx: HLE Acclaim %s (sin-acclaim)", acclaim ? "activa" : "apagada");
 	bool eurocom = !file_exists(SALSA64_DATA_DIR "/sin-eurocom");
 	salsa64_log("gfx: HLE Eurocom %s (sin-eurocom)", eurocom ? "activa" : "apagada");
+	/* Conker (#68): sus variantes «F3DEX.NoN»… por el CRC del código. */
+	bool conker_text_only = file_exists(SALSA64_DATA_DIR "/conker-ucode-viejo");
+	salsa64_log("gfx: microcódigo de Conker %s (conker-ucode-viejo)",
+		    conker_text_only ? "solo por su texto (viejo)" : "por su código, con todas sus variantes");
 	bool xbus_old = file_exists(SALSA64_DATA_DIR "/texturas-xbus-viejo");
 	bool texture_wait = file_exists(SALSA64_DATA_DIR "/texturas-espera-rsx");
 	salsa64_rdp_set_texture_wait(texture_wait);
@@ -5796,12 +5802,14 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 		gfx_spu.backend.turbo3d = turbo3d;
 		gfx_spu.backend.acclaim = acclaim;
 		gfx_spu.backend.eurocom = eurocom;
+		gfx_spu.backend.conker_text_only = conker_text_only;
 		salsa64_rsp_set_gfx(&n64.bus, &gfx_spu.backend);
 	} else {
 		salsa64_gfx_sync_init(&gfx_ppe, &gfx_ppe_state, &n64.bus, &front_sink);
 		gfx_ppe.backend.turbo3d = turbo3d;
 		gfx_ppe.backend.acclaim = acclaim;
 		gfx_ppe.backend.eurocom = eurocom;
+		gfx_ppe.backend.conker_text_only = conker_text_only;
 		salsa64_rsp_set_gfx(&n64.bus, &gfx_ppe.backend);
 	}
 	/* Duración mínima de una tarea gráfica, en ciclos de la N64 (rsp.c,

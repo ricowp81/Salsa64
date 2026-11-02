@@ -1,5 +1,106 @@
 # Estado
 
+## 2026-11-02 — #68 (2), Conker: en la pelea de la bóveda los modelos aparecen y desaparecen
+
+- En la PS3, con el arreglo de abajo (Chapters → Heist → The Vault): la cinemática y la pelea se ven,
+  pero en la pelea (898–979 s del log) las ventanas de 5 s dicen 13, 19 y hasta 95 «tareas
+  cortadas» de 150, con 2464–2616 dibujos y 6043–7608 triángulos por tarea.
+- En el host, el mismo recorrido (estado de Chapters de #3 con los bytes de capítulos de la base de
+  trucos y el mando por guion; la pelea con pulsaciones al azar): 316 tareas cortadas con banderas
+  0x05 (`GFX_RES_CMD_FULL`). Era el búfer de comandos: 1280 KB, 2642 dibujos de 496 bytes, lleno
+  en cada tarea cortada. Con 4 MB, ninguna cortada y el pico de una tarea es 1400 KB (2890
+  dibujos); los vértices llegan a 813 KB de 2 MB y el arena de texturas a 0. Son las estrellas de
+  la esclusa, un dibujo cada una (traen su color primario), antes de la nave y los modelos: en una
+  tarea cortada sale solo el cielo estrellado.
+- Arreglo: comandos de 1280 a 1536 KB (3170 dibujos, 10 % sobre el pico medido) en la PS3
+  (`src/rdp/rdp.c`) y en el host. Como en las veces anteriores, sale del arena de texturas, que
+  baja de 2,625 a 2,25 MB por juego de búferes (con los 768 KB de la interpolación, que crecen con
+  los comandos); el juego de búferes sigue en 6,5 MB y la memoria principal no cambia
+  (`_Static_assert` del total y de un arena de al menos 2 MB). El arena casi no se usa con la
+  caché: en los logs de la PS3 a mano, la media más alta por ventana es 336 KB por tarea. Sin
+  interruptor: solo es capacidad.
+- `salsa64-run` dice al final el pico de cada búfer de salida en una tarea (comandos con sus
+  dibujos, vértices y texturas) y en qué campo.
+- Con 1536 KB: la bóveda y tres peleas al azar sin tareas cortadas (picos 1345–1400 KB); con
+  1280 KB, la misma pelea desde el campo 10500 corta 181 tareas en 400 campos. Escenas del host y
+  Conker con «F3DEXBG.NoN» idénticas a main. Falta la PS3: que el log de la pelea diga 0 tareas
+  cortadas y que los modelos no parpadeen.
+
+## 2026-11-02 — #68, Conker: tras el ascensor del final de Heist, cinemática rota y pantalla negra con líneas
+
+- Log de la PS3 (v0.2.15): todo el juego con «F3DEXBG.NoN fifo 2.08» (imagen Conker del SPE 0) hasta
+  la tarea 182 262, al tomar el ascensor: «cambio de imagen Conker → F3DEX2» y el microcódigo
+  «RSP Gfx ucode F3DEX.NoN fifo 2.08» **en la misma dirección (0x0bebb0) y con el mismo CRC-32 del
+  código** (99E222AC, 1B4ACE88 en palabras). Desde ahí no vuelve a la imagen Conker; tras dos
+  reinicios, el juego arranca con F3DEXBG y al cargar la partida pasa otra vez a F3DEX2. Ningún aviso
+  de destinos, copias, z ni del RSX que cambie en ese momento.
+- Reproducido en el host con el estado del reporte (su ROM era una traducción al español, de otra
+  cabecera; se cargó con la USA en una copia con esa cabecera, fuera del repo): con la HLE, 3952
+  comandos por tarea, 98 triángulos y **531 comandos sin implementar (último 0x18)**; la imagen es
+  negra con unas líneas, como en el reporte. Con `--lle=all`, la sala con Conker (2338 triángulos
+  por tarea, 0 sin implementar).
+- Causa: el juego trae un solo código de 4 KB y ocho segmentos de datos, «F3DEX», «F3DEXBS»,
+  «F3DEXBG» y «F3DEXBGBS», con y sin «.NoN» (en la ROM, cada 0x6C0 bytes), y copia el que toca en
+  un búfer fijo. Entre ellos solo cambian el texto, las constantes del recorte cercano (DMEM 0x1AC,
+  0x666, 0x6A6) y el largo de una carga de código (DMEM 0x6AC: 0x318 en BG, 0x388 en F3DEX, 0x3A0
+  en BS). La detección iba por el texto: «F3DEX.NoN fifo 2.08» se tomaba por un F3DEX2, que no
+  tiene G_TRI4 (0x10–0x1F): casi todos los triángulos quedaban sin dibujar y los vértices de 16
+  bytes con luces de Rare se leían como los de F3DEX2.
+- Que «F3DEX» y «F3DEXBG» son el mismo microcódigo para la HLE, medido con el LLE: en la cueva del
+  Poo (con «F3DEXBG.NoN»), el LLE con el largo de carga de «F3DEX» (DMEM 0x6AC = 0x388) da las 50
+  tareas bit a bit iguales que con el suyo, y el código de más (IMEM 0x5F0–0x65F) sí se ejecuta
+  (14 190 entradas). Al revés, en la escena del reporte el LLE con el largo de «F3DEXBG» se cuelga
+  en la segunda tarea (60 M de instrucciones): «F3DEX» vuelve a cargar esos 0x70 bytes porque allí
+  algo pisa la IMEM, y por eso el juego lo usa en esa parte.
+- Arreglo (`core/rsp.c`): el código de Conker se reconoce por el CRC-32 de sus 4 KB (palabras al
+  revés 0x1B4ACE88) antes que el texto, y cualquiera de las ocho variantes va a F3DEXBG (imagen
+  Conker del SPE 0, sin cambio de imagen); sin recorte cercano si el nombre dice «.No» («F3DEXBGBS.No»
+  no cabe entero). El CRC de los 4 KB se calcula una vez por tarea para las tres variantes por
+  código (Acclaim, Eurocom, Conker), antes eran dos cálculos. Interruptor `conker-ucode-viejo` en
+  `/dev_hdd0/salsa64/` (en el host, `SALSA64_GFX_CONKER_VIEJO=1`): solo el texto, como antes.
+- Antes y después contra el LLE (mismo estado, 300 y 1800 campos sin tocar el control): con el
+  arreglo, la sala, Conker y los objetos en su sitio (0 comandos sin implementar, 1156 triángulos
+  por tarea); `--lle-check-gfx` da 50 de 50 tareas «distintas», del mismo tipo que el resto de
+  Conker con «F3DEXBG.NoN» (luz de la HLE más baja que la del LLE: razón HLE/LLE por canal 0,92,
+  0,84, 0,77 en esta sala; 0,80, 0,79 en la cueva del Poo y 0,97, 0,96, 0,99 en la entrada del
+  maizal, las dos con «F3DEXBG.NoN» y 50 de 50 «distintas» también). Sin ares: el estado no se
+  puede llevar a ares y no hay partida del reportero para llegar a esa sala.
+- Otros juegos: las 8 escenas del host (`tools/escenas-host.sh`) idénticas a main; Conker con
+  «F3DEXBG.NoN» (título, Chapters, maizal y cueva del Poo, estados de #3) idéntico a main.
+- Prueba: `rsp_detect_gbi_conker` (las ocho variantes con el CRC: F3DEXBG y su plano cercano; con
+  el interruptor, el texto; otro código con el mismo texto, F3DEX2). Falta la PS3: el reportero,
+  desde su estado (o desde la partida tras el ascensor), y con `conker-ucode-viejo` para ver la
+  falla de antes.
+
+## 2026-11-02 — #69, FIFA 99: la imagen vibra (cuadros completos escalados y entrelazados)
+
+- Reporte (PS3, paquete con el arreglo del espejo): la imagen de FIFA vibra en el menú y en el
+  partido; el log dice «cuadros entrelazados completos tejidos (vi-campos)», o sea el tejido de
+  #39 activo.
+- VI por campo (`salsa64-run --trace-vi`, que ahora da CONTROL, WIDTH, H/V_VIDEO, X/Y_SCALE, el
+  bit de campo y, con `--gfx-frame`, lo que presentaría la PS3): menús 512 × 384 a Y_SCALE 1,6
+  (0x02000666, 379 renglones) y partido 480 × 360 a 1,5 (0x02000600, 356), SERRATE, dos búferes.
+  En los campos impares el origen está en la fila 1 del búfer y V_VIDEO es 0x002301FD; en los
+  pares, en la fila 2 y 0x002501FF; y casi cada campo es del otro búfer. ares (GDB, 24 muestras
+  en la intro y la demostración) da el mismo emparejamiento. En la consola los dos campos ponen
+  la misma fila del búfer en el mismo renglón de la pantalla (a 0,2–0,25 filas): la imagen está
+  quieta.
+- Causa: el tejido de #39 solo reconoce 640 × 480 a Y_SCALE 2,0 con 400 renglones o más; FIFA no
+  entra, y la ventana común solo se sostenía dentro de un mismo búfer: en la PS3 cada campo se
+  presentaba desde su fila (1, 2, 1, 2…: en el menú 30 saltos en 30 campos, en el partido 7 de
+  11), una fila de 360 arriba y abajo a 60 Hz.
+- Arreglo (`core/vi.c`): también es un cuadro completo un búfer contiguo leído a Y_SCALE entre 1 y
+  2 (cada renglón del campo avanza más de una fila): `weave`, vpos sin el bit de campo y la misma
+  ventana aunque cambie el búfer. Interruptor `vi-escalado-campos` (en el host,
+  `SALSA64_VI_ESCALADO_CAMPOS=1`); `vi-campos` sigue apagando los dos. Con el arreglo, 0 saltos en
+  el menú y en el partido (fila 1 siempre).
+- Otros juegos, 2400 campos desde el arranque sin tocar el control, con y sin el cambio:
+  Indiana Jones, GoldenEye, Perfect Dark, Racer y Donkey Kong 64 presentan exactamente lo mismo en
+  cada campo. Cambian, con el mismo patrón que FIFA: Resident Evil 2 (436 × 382 a 1,75, filas 0/1;
+  saltos de 604 a 8) y Rogue Squadron (640 × 335 a 1,53, dos búferes; de 1856 a 7), donde la
+  imagen también debía vibrar. Pruebas `scaled_interlaced_frame` (test_vi) y
+  `targets_present_scaled_interlaced` (test_targets, con la secuencia del partido). Falta la PS3.
+
 ## 2026-11-02 — #69, FIFA 99: pantalla negra con «Continue» tras el partido (espejo del framebuffer)
 
 - Reporte (v0.2.15, HEN): al acabar un partido y darle a continuar, pantalla negra. En el log, 13
