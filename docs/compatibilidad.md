@@ -10,6 +10,12 @@ el [radar de compatibilidad](compatibilidad/index.html). Sus datos están en
 
 Las entradas antiguas conservan sus métodos de prueba como historia.
 
+## 2026-11-02 — Reporte #69 (FIFA 99)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| FIFA 99 (USA) | «Continue» tras el partido sigue a la tabla de posiciones en el host con el estado del reporte y la cabecera del heap repuesta (falta la PS3) | en la PS3, el espejo del último cuadro del menú (512 × 384) pisaba la cabecera de un bloque del heap que el juego ya había puesto detrás del framebuffer del partido (480 × 360); al acabar el partido, al soltar ese bloque, AdEL y pantalla negra. El espejo ya no escribe lo que otra color image dibujó después (`espejo-pisa-otras` vuelve a como antes). El estado del reporte ya trae la cabecera rota: hay que jugar un partido nuevo |
+
 ## 2026-10-31 — Reporte #62 (Dr. Mario 64)
 
 | Juego | Estado | Notas |
