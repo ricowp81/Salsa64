@@ -1,5 +1,31 @@
 # Estado
 
+## 2026-11-02 — #68 (2), Conker: en la pelea de la bóveda los modelos aparecen y desaparecen
+
+- En la PS3, con el arreglo de abajo (Chapters → Heist → The Vault): la cinemática y la pelea se ven,
+  pero en la pelea (898–979 s del log) las ventanas de 5 s dicen 13, 19 y hasta 95 «tareas
+  cortadas» de 150, con 2464–2616 dibujos y 6043–7608 triángulos por tarea.
+- En el host, el mismo recorrido (estado de Chapters de #3 con los bytes de capítulos de la base de
+  trucos y el mando por guion; la pelea con pulsaciones al azar): 316 tareas cortadas con banderas
+  0x05 (`GFX_RES_CMD_FULL`). Era el búfer de comandos: 1280 KB, 2642 dibujos de 496 bytes, lleno
+  en cada tarea cortada. Con 4 MB, ninguna cortada y el pico de una tarea es 1400 KB (2890
+  dibujos); los vértices llegan a 813 KB de 2 MB y el arena de texturas a 0. Son las estrellas de
+  la esclusa, un dibujo cada una (traen su color primario), antes de la nave y los modelos: en una
+  tarea cortada sale solo el cielo estrellado.
+- Arreglo: comandos de 1280 a 1536 KB (3170 dibujos, 10 % sobre el pico medido) en la PS3
+  (`src/rdp/rdp.c`) y en el host. Como en las veces anteriores, sale del arena de texturas, que
+  baja de 2,625 a 2,25 MB por juego de búferes (con los 768 KB de la interpolación, que crecen con
+  los comandos); el juego de búferes sigue en 6,5 MB y la memoria principal no cambia
+  (`_Static_assert` del total y de un arena de al menos 2 MB). El arena casi no se usa con la
+  caché: en los logs de la PS3 a mano, la media más alta por ventana es 336 KB por tarea. Sin
+  interruptor: solo es capacidad.
+- `salsa64-run` dice al final el pico de cada búfer de salida en una tarea (comandos con sus
+  dibujos, vértices y texturas) y en qué campo.
+- Con 1536 KB: la bóveda y tres peleas al azar sin tareas cortadas (picos 1345–1400 KB); con
+  1280 KB, la misma pelea desde el campo 10500 corta 181 tareas en 400 campos. Escenas del host y
+  Conker con «F3DEXBG.NoN» idénticas a main. Falta la PS3: que el log de la pelea diga 0 tareas
+  cortadas y que los modelos no parpadeen.
+
 ## 2026-11-02 — #68, Conker: tras el ascensor del final de Heist, cinemática rota y pantalla negra con líneas
 
 - Log de la PS3 (v0.2.15): todo el juego con «F3DEXBG.NoN fifo 2.08» (imagen Conker del SPE 0) hasta

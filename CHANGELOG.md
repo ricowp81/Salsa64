@@ -30,6 +30,13 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
   in the meantime. Saved states made during an affected match already carry
   the broken header: start a new match. The file `espejo-pisa-otras` in
   `/dev_hdd0/salsa64/` restores the old behaviour.
+
+- **Conker's Bad Fur Day: models flickered in and out during the fight in the
+  vault** (#68). The starfield seen through the airlock is drawn one star at a
+  time, and with the ship and the models a frame needed up to ~2900 draws; the
+  graphics output buffer held 2642, so the rest of the frame was dropped. The
+  buffer now holds 3170 draws; the extra space comes from the texture staging
+  area, so overall memory use does not change.
 - **Conker's Bad Fur Day (USA): the Great Mighty Poo did not open his mouth and
   Sweet Melody got stuck when entered straight from the Chapters menu** (#3).
   The game's music manager starts a song by sending PLAY to the sequence
