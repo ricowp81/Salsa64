@@ -46,6 +46,44 @@
   desde su estado (o desde la partida tras el ascensor), y con `conker-ucode-viejo` para ver la
   falla de antes.
 
+## 2026-11-02 — #69, FIFA 99: pantalla negra con «Continue» tras el partido (espejo del framebuffer)
+
+- Reporte (v0.2.15, HEN): al acabar un partido y darle a continuar, pantalla negra. En el log, 13
+  campos después de la A (el juego ya copiaba el código de la pantalla siguiente: 7638 bloques
+  invalidados por escrituras del CPU en 0x0e08b8–0x11fe41): «cpu: fallo AdEL … pc 0x8005B344,
+  dirección 0x10003»; después 92–98 % en bucles de espera, ninguna tarea gráfica y audio en
+  silencio (el hilo del juego quedó parado).
+- Host, con el estado del reporte (la «Post Game Menu» con «Continue» elegido) y la A: el mismo
+  AdEL en el mismo pc y la misma dirección con el intérprete, también con `-DSALSA64_CPI=2` (no es
+  del ritmo del CPU). Volcado crudo: el hilo 1 (prioridad 60) parado en 0x8005B344, que es el
+  `free` del heap del juego (bloques con cabecera de 16 bytes antes del puntero: «BM», banderas,
+  tamaño, siguiente, anterior); le piden soltar 0x801abc80 (el segundo framebuffer del partido,
+  de 0x800ce0a8) y lee el anterior en 0x00010001: los 64 bytes 0x1abc40–0x1abc7f, cabecera
+  incluida, son negro de RGBA5551. Ya están así en el estado guardado.
+- Causa, en el log de la PS3: al empezar el partido (campo ~4810, nueve minutos antes) el juego
+  cambia los framebuffers de 512 × 384 del menú (0x157640, 0x1b76c0) por los de 480 × 360 del
+  partido (0x157640, 0x1abcc0) en la misma memoria; el primero acaba en 0x1abc40 y la cabecera del
+  bloque del segundo queda en 0x1abc70. «espejo del framebuffer a la RDRAM 0x157640–0x1b7640 (ancho
+  512…) de la tarea 3678 (3679 terminadas): 1 de 3456 líneas … sin escribir (la primera en
+  0x1abc80)»: el espejo del último cuadro del menú llegó después de la primera tarea del partido,
+  que había renovado la huella de la línea 0x1abc00 (sus filas llegan a 0x1abc40) con la cabecera
+  ya escrita; la guarda la dio por buena y el espejo escribió encima su negro (fila 337, columnas
+  256–287). La línea 0x1abc80, que esa tarea no tocó, sí se salvó.
+- Referencias: en el host, reponiendo la cabecera en el estado (`--poke` con
+  `424d0140 00054640 802002f0 801575f0`, sacada de los bloques vecinos) «Continue» sigue a la tabla
+  de posiciones de la liga; y el recorrido del log desde el arranque (los botones de la PS3 como
+  `--pad`) llega al mismo partido (AC Milan – R Madrid) con esa misma cabecera intacta (el host
+  escribe la RDRAM al dibujar, como el RDP, y no tiene espejos tardíos); al acabar el partido
+  (campo ~36600), START y la A en «Continue» siguen a la tabla de posiciones sin excepciones.
+- Arreglo (`rdp_claim_ring`, targets.h): al terminar cada tarea el hilo de emulación anota, junto
+  con las huellas, qué filas de qué color image (dirección y bytes por fila) pudieron tocar sus
+  dibujos (anillo de 64); el espejo del framebuffer de la tarea T (contada como `rdp.finished`,
+  `slot_fin` por ranura) no escribe las líneas que una color image distinta dibujó en una tarea
+  posterior. La misma color image vuelta a dibujar y otra de la misma tarea no cuentan; si el anillo
+  perdió entradas, como antes. Solo el espejo del framebuffer. Interruptor `espejo-pisa-otras`; el
+  log de 5 s suma los espejos y líneas recortados así. Prueba `targets_claims` con la memoria del
+  juego. Falta la PS3 (un partido nuevo: el estado del reporte ya trae la cabecera rota).
+
 ## 2026-10-31 — #3, Conker: el Great Mighty Poo no abre la boca (PLAY sin confirmar, arreglo por juego)
 
 - Reproducido en el host con el estado de la ronda anterior en Chapters (partida nueva,

@@ -16,6 +16,12 @@ Las entradas antiguas conservan sus métodos de prueba como historia.
 |---|---|---|
 | Conker's Bad Fur Day | desde el ascensor del final de Heist, la sala y Conker se ven en el host como con el microcódigo real (falta la PS3) | ahí el juego cambia a su variante «F3DEX.NoN» (mismo código que «F3DEXBG.NoN»), que por el texto se tomaba por F3DEX2: sin G_TRI4, pantalla negra con líneas. Ahora el código de Conker se reconoce por su CRC (`1B4ACE88` en palabras); `conker-ucode-viejo` vuelve al texto. La luz de la HLE sigue algo más baja que la del microcódigo real, como en el resto del juego |
 
+## 2026-11-02 — Reporte #69 (FIFA 99)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| FIFA 99 (USA) | «Continue» tras el partido sigue a la tabla de posiciones en el host con el estado del reporte y la cabecera del heap repuesta (falta la PS3) | en la PS3, el espejo del último cuadro del menú (512 × 384) pisaba la cabecera de un bloque del heap que el juego ya había puesto detrás del framebuffer del partido (480 × 360); al acabar el partido, al soltar ese bloque, AdEL y pantalla negra. El espejo ya no escribe lo que otra color image dibujó después (`espejo-pisa-otras` vuelve a como antes). El estado del reporte ya trae la cabecera rota: hay que jugar un partido nuevo |
+
 ## 2026-10-31 — Reporte #62 (Dr. Mario 64)
 
 | Juego | Estado | Notas |

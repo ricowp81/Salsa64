@@ -3776,11 +3776,13 @@ static void stats(uint64_t now)
 		}
 		uint32_t gcop = rs.guard_copies - sw.rdp0.guard_copies, glin = rs.guard_lines - sw.rdp0.guard_lines;
 		uint64_t gtb = rs.tb_guard_mark - sw.rdp0.tb_guard_mark;
+		uint32_t ccop = rs.claim_copies - sw.rdp0.claim_copies, clin = rs.claim_lines - sw.rdp0.claim_lines;
 		if (gcop || gtb)
 			salsa64_log("gfx: guarda contra el CPU: %u copias tardías con %u líneas de 128 bytes sin escribir "
 				    "(algo que no es el RDP las cambió después de su tarea); huellas %.3f ms por tarea en el "
-				    "hilo de emulación",
-				    gcop, glin, tasks ? gtb * 1e3 / spukit_tick_hz() / tasks : 0.0);
+				    "hilo de emulación; %u espejos con %u líneas sin escribir porque otra color image las "
+				    "dibujó después",
+				    gcop, glin, tasks ? gtb * 1e3 / spukit_tick_hz() / tasks : 0.0, ccop, clin);
 		uint32_t zwo = rs.z_write_only - sw.rdp0.z_write_only, zcl = rs.zclears - sw.rdp0.zclears;
 		uint32_t zpend = rs.zclears_pending - sw.rdp0.zclears_pending, zmrg = rs.zclears_merged - sw.rdp0.zclears_merged;
 		uint32_t zcol = rs.z_as_color - sw.rdp0.z_as_color, zup = rs.z_uploads - sw.rdp0.z_uploads;
@@ -6178,6 +6180,14 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 				salsa64_log("guarda de las copias contra el CPU: %s; vigilante %s0x%06x–0x%06x",
 					    guard_on ? "encendida" : "apagada (sin-guarda-cpu)", whi ? "en " : "apagado ",
 					    wlo, whi);
+			/* El espejo del framebuffer no escribe las líneas que otra color
+			 * image dibujó después (salsa64_rdp_claims; FIFA 99 al acabar el
+			 * partido): `espejo-pisa-otras` vuelve a como antes. */
+			bool claims_on = !file_exists(SALSA64_DATA_DIR "/espejo-pisa-otras");
+			salsa64_rdp_claims(claims_on);
+			salsa64_log("gfx: el espejo del framebuffer %s",
+				    claims_on ? "no pisa lo que otra color image dibujó después (espejo-pisa-otras)"
+					      : "pisa lo que otra color image dibujó después, como antes (espejo-pisa-otras)");
 		}
 		/* Alfa en los destinos de render a textura (salsa64_rdp_target_alpha):
 		 * `sin-alfa-destinos` vuelve a los destinos X8R8G8B8 de antes. */

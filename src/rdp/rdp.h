@@ -91,6 +91,10 @@ struct salsa64_rdp_stats {
 	 * tomar las huellas al terminar cada tarea (hilo de emulación). */
 	uint32_t guard_lines, guard_copies;
 	uint64_t tb_guard_mark;  /* ticks del timebase */
+	/* Líneas que el espejo del framebuffer no escribió porque otra color
+	 * image las dibujó en una tarea posterior (rdp_claim_ring, targets.h),
+	 * y espejos con alguna así. */
+	uint32_t claim_lines, claim_copies;
 	uint32_t tall_fills;                /* rellenos de una color image más alta que 480 repartidos a sus destinos */
 	uint32_t tex_rsx, tex_rdram, tex_self, primes, prime_waits;
 	/* Alfa en los destinos (salsa64_rdp_target_alpha): destinos creados con
@@ -325,6 +329,11 @@ void salsa64_rdp_target_alpha(bool on);
  * del CPU (copias del RSX, VISCVG, DMA) en la RDRAM [watch_lo, watch_hi), y
  * si dejó la palabra 0x00010001. Fuera del bucle. */
 void salsa64_rdp_guard(bool on, uint32_t watch_lo, uint32_t watch_hi);
+/* El espejo del framebuffer no escribe las líneas que otra color image
+ * dibujó en una tarea posterior a la suya (rdp_claim_ring, targets.h; FIFA 99
+ * al acabar el partido): encendido por omisión; `on` false vuelve a como
+ * antes (solo la guarda). Fuera del bucle. */
+void salsa64_rdp_claims(bool on);
 /* Hilo de emulación: un DMA escribió la RDRAM [pa, pa + len); con
  * `gfx_in_flight`, mientras corría una tarea gráfica. Las copias de esa
  * tarea y de las anteriores no pisan ese tramo (targets.h, rdp_dma_ring). */

@@ -17,6 +17,19 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
   microcode is now recognised by its code, so every variant uses Conker's
   graphics path. The file `conker-ucode-viejo` in `/dev_hdd0/salsa64/` restores
   the old name-only detection.
+
+- **FIFA 99: the screen stayed black after a match when choosing Continue**
+  (#69). When the game switches from the 512 × 384 menu framebuffers to the
+  480 × 360 match framebuffers it frees the old ones and allocates new heap
+  blocks in the same memory. The PS3 copies each displayed frame back to the
+  emulated RAM a little later than the N64 would have written it, and the copy
+  of the last menu frame landed after the first match frame: it overwrote the
+  header of a heap block with black pixels. Nothing noticed until the match
+  ended and the game freed that block, which crashed the game thread. The copy
+  of a frame no longer writes lines that a different, newer color image drew
+  in the meantime. Saved states made during an affected match already carry
+  the broken header: start a new match. The file `espejo-pisa-otras` in
+  `/dev_hdd0/salsa64/` restores the old behaviour.
 - **Conker's Bad Fur Day (USA): the Great Mighty Poo did not open his mouth and
   Sweet Melody got stuck when entered straight from the Chapters menu** (#3).
   The game's music manager starts a song by sending PLAY to the sequence

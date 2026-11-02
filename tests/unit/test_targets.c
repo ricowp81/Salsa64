@@ -1107,6 +1107,78 @@ static void targets_cpu_guard(void)
 	CHECK_EQ(guard_t.base[sizeof guard_ram >> RDP_GUARD_SHIFT], 0);
 }
 
+/* Lo que otra color image dibujó después (rdp_claim_ring), con la memoria de
+ * FIFA 99 (#69) desplazada 1 MB: el menú dibuja en 512 × 384 desde 0x57640;
+ * el juego suelta ese framebuffer, pide uno de 480 × 360 en el mismo lugar
+ * (acaba en 0xabc40) y otro bloque cuya cabecera del heap queda en 0xabc70;
+ * la primera tarea del partido renueva la huella de la línea 0xabc00 y el
+ * espejo tardío del menú la pasaba y escribía su negro sobre la cabecera. */
+static void targets_claims(void)
+{
+	const uint32_t FB = 0x57640, MENU = 1024, GAME = 960, HDR = 0xabc70;
+	struct rdp_claim_ring r;
+	struct rdp_claim cl[4];
+	memset(&r, 0, sizeof r);
+	memset(guard_ram, 0, sizeof guard_ram);
+	rdp_guard_clear(&guard_t);
+	/* Tarea 3678: el último cuadro del menú. */
+	memset(guard_ram + FB, 0x01, MENU * 384);
+	rdp_guard_mark(&guard_t, guard_ram, sizeof guard_ram, FB, FB + MENU * 384);
+	rdp_claim_note(&r, FB, MENU, FB, FB + MENU * 384, 3678);
+	/* El CPU: cabecera del bloque del segundo framebuffer y su primera palabra. */
+	static const uint8_t hdr[20] = { 0x42, 0x4d, 0x01, 0x40, 0x00, 0x05, 0x46, 0x40, 0x80, 0x20, 0x02, 0xf0,
+					 0x80, 0x15, 0x75, 0xf0, 0x80, 0x23, 0x8c, 0xf0 };
+	memcpy(guard_ram + HDR, hdr, sizeof hdr);
+	/* Tarea 3679: el primer cuadro del partido, en 480 × 360. */
+	rdp_guard_mark(&guard_t, guard_ram, sizeof guard_ram, FB, FB + GAME * 360);
+	rdp_claim_note(&r, FB, GAME, FB, FB + GAME * 360, 3679);
+	CHECK_EQ(FB + GAME * 360, 0xabc40);
+	/* La guarda ve la línea 0xabc80 cambiada, pero no la 0xabc00: su huella
+	 * es de la tarea 3679, con la cabecera ya escrita. */
+	CHECK(rdp_guard_ok(&guard_t, guard_ram, HDR >> RDP_GUARD_SHIFT));
+	CHECK(!rdp_guard_ok(&guard_t, guard_ram, (HDR + 16) >> RDP_GUARD_SHIFT));
+	/* El espejo del menú (tarea 3678): la línea de la cabecera es de otra
+	 * color image posterior; lo que quedó fuera de las dos, no. */
+	int n = rdp_claims_after(&r, FB, MENU, FB, FB + MENU * 384, 3678, cl, 4);
+	CHECK_EQ(n, 1);
+	CHECK_EQ(cl[0].lo, FB);
+	CHECK_EQ(cl[0].hi, 0xabc40);
+	CHECK(rdp_claimed(cl, n, HDR >> RDP_GUARD_SHIFT));
+	CHECK(rdp_claimed(cl, n, FB >> RDP_GUARD_SHIFT));
+	CHECK(!rdp_claimed(cl, n, (HDR + 16) >> RDP_GUARD_SHIFT));
+	CHECK(!rdp_claimed(cl, n, (FB + MENU * 383) >> RDP_GUARD_SHIFT));
+	/* El espejo del partido (tarea 3679) no ve nada: el menú es anterior. */
+	CHECK_EQ(rdp_claims_after(&r, FB, GAME, FB, FB + GAME * 360, 3679, cl, 4), 0);
+	/* La misma color image vuelta a dibujar no cuenta (eso es de la guarda),
+	 * ni otra de la misma tarea (una imagen dentro del framebuffer). */
+	rdp_claim_note(&r, FB, GAME, FB, FB + GAME * 100, 3680);
+	rdp_claim_note(&r, FB + GAME * 200, GAME, FB + GAME * 200, FB + GAME * 220, 3680);
+	CHECK_EQ(rdp_claims_after(&r, FB, GAME, FB, FB + GAME * 360, 3679, cl, 4), 1);
+	CHECK_EQ(cl[0].lo, FB + GAME * 200);
+	CHECK_EQ(rdp_claims_after(&r, FB, GAME, FB, FB + GAME * 360, 3680, cl, 4), 0);
+	/* Fuera del tramo copiado, nada. */
+	CHECK_EQ(rdp_claims_after(&r, FB, MENU, 0x200000, 0x210000, 3678, cl, 4), 0);
+	/* Varias de la misma color image en una tarea se funden. */
+	uint32_t before = r.n;
+	rdp_claim_note(&r, FB + GAME * 200, GAME, FB + GAME * 300, FB + GAME * 310, 3680);
+	CHECK_EQ(r.n, before);
+	CHECK_EQ(rdp_claims_after(&r, FB, GAME, FB, FB + GAME * 360, 3679, cl, 4), 1);
+	CHECK_EQ(cl[0].hi, FB + GAME * 310);
+	/* Más tramos que lugar: el último cubre los que sobran. */
+	for (uint32_t i = 0; i < 6; i++)
+		rdp_claim_note(&r, 0x100000 + i * 0x1000, 64, 0x100000 + i * 0x1000, 0x100100 + i * 0x1000, 3681 + i);
+	n = rdp_claims_after(&r, 0x90000, 64, 0x100000, 0x110000, 3680, cl, 4);
+	CHECK_EQ(n, 4);
+	CHECK(rdp_claimed(cl, n, 0x100000 >> RDP_GUARD_SHIFT));
+	CHECK(rdp_claimed(cl, n, (0x100000 + 5 * 0x1000) >> RDP_GUARD_SHIFT));
+	/* Si el anillo ya perdió entradas posteriores a la tarea, no se sabe. */
+	for (uint32_t i = 0; i < RDP_CLAIM_RING; i++)
+		rdp_claim_note(&r, 0x300000, 64, 0x300000, 0x300040, 4000 + i);
+	CHECK_EQ(rdp_claims_after(&r, FB, MENU, FB, FB + MENU * 384, 3678, cl, 4), -1);
+	CHECK_EQ(rdp_claims_after(&r, FB, MENU, 0x300000, 0x300040, 4000, cl, 4), 4);
+	CHECK_EQ(rdp_claims_after(&r, FB, MENU, 0x300000, 0x300040, 4063, cl, 4), 0);
+}
+
 static void targets_frame_mirror(void)
 {
 	const uint32_t A = 0x38f800, B = 0x3b5000, C = 0x3da800, LINE = 640;
@@ -1209,6 +1281,7 @@ void t_suite_targets(void)
 	RUN(targets_recycled_slot);
 	RUN(targets_dma_ring);
 	RUN(targets_cpu_guard);
+	RUN(targets_claims);
 	RUN(targets_inside);
 	RUN(targets_tall_pending);
 	RUN(targets_present_interlaced);
