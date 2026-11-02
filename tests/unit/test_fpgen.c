@@ -464,8 +464,107 @@ static void rsxkit_read_filter(void)
 	CHECK(!rsxkit_read_filter_nearest(336, 256, 336, 256, 0));
 }
 
+/* El alfa del fragmento de un dibujo de rsxkit (rsxkit.h, rsxkit_draw.k):
+ * Σ_j (Π factores) · X_j.a con X_j.a = k[j][0][3] + (k[j][1][3] + k[j][2][3])·Ca,
+ * con el alfa de las texturas t0, t1 y el del vértice ca. */
+static float draw_alpha(const rsxkit_draw *d, float t0, float t1, float ca)
+{
+	float a = 0.0f;
+	unsigned n = d->nterms ? d->nterms : RSXKIT_K_LINCOMB;
+	for (unsigned j = 0; j < n; j++) {
+		float x = d->k[j][0][3] + (d->k[j][1][3] + d->k[j][2][3]) * ca, f = 1.0f;
+		if (d->nterms) {
+			for (unsigned i = 0; i < RSXKIT_K_FACTORS && d->factors[j][i]; i++) {
+				uint8_t q = d->factors[j][i];
+				f *= q == RSXKIT_FP_T0 || q == RSXKIT_FP_T0A ? t0 : q == RSXKIT_FP_T1 || q == RSXKIT_FP_T1A ? t1 : ca;
+			}
+		} else {
+			f = j == RSXKIT_K_T0 || j == RSXKIT_K_T0A ? t0 : j == RSXKIT_K_T1 || j == RSXKIT_K_T1A ? t1 : 1.0f;
+		}
+		a += f * x;
+	}
+	return a;
+}
+
+/* La pasada del alfa de RSXKIT_DSTA_ONE (lib/rsxkit/src/dsta.c): la mezcla
+ * del RSX no da una constante (el primer intento, con GCM_CONSTANT_ALPHA, dejó
+ * el alfa del fragmento en la PS3), así que una pasada solo en el alfa lo
+ * lleva a 1 o más en los mismos fragmentos que escribe el dibujo: con
+ * prueba de alfa, los que pasan α ≥ r (y ninguno más); sin ella, todos. */
+static void rsxkit_dsta_pass(void)
+{
+	rsxkit_draw d, b;
+	/* Ya 1 (solo el término constante): una pasada. */
+	memset(&d, 0, sizeof d);
+	d.k[RSXKIT_K_ONE][0][3] = 1.0f;
+	CHECK(rsxkit_dsta_alpha_is_one(&d));
+	d.k[RSXKIT_K_T0A][0][3] = 0.5f;
+	CHECK(!rsxkit_dsta_alpha_is_one(&d));
+	d.k[RSXKIT_K_T0A][0][3] = 0.0f;
+	d.k[RSXKIT_K_ONE][1][3] = 0.5f;  /* con el alfa del vértice */
+	CHECK(!rsxkit_dsta_alpha_is_one(&d));
+
+	/* Combinación lineal, α = 0,75·T0a, sin prueba: todo con 1 o más. */
+	memset(&d, 0, sizeof d);
+	d.k[RSXKIT_K_T0A][0][3] = 0.75f;
+	d.blend = RSXKIT_BLEND_ALPHA;
+	d.depth = RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_WRITE;
+	d.edges = 8;
+	CHECK(rsxkit_dsta_alpha_pass(&d, &b));
+	CHECK_EQ(b.blend, RSXKIT_BLEND_OFF);
+	CHECK_EQ(b.dst_alpha, RSXKIT_DSTA_PASS);
+	CHECK_EQ(b.depth, RSXKIT_DEPTH_TEST);
+	CHECK_EQ(b.edges, 0);
+	CHECK_EQ(b.alpha_ref, 0);
+	for (int t = 0; t <= 255; t++)
+		CHECK(draw_alpha(&b, t / 255.0f, 0.0f, 0.0f) >= 1.0f);
+
+	/* Con prueba de alfa: la pasada pasa la suya (≥ 1) justo donde el dibujo
+	 * pasa la de él, con los alfas de 8 bits y en el umbral. */
+	static const uint8_t refs[] = { 1, 32, 96, 128, 200, 255 };
+	for (unsigned r = 0; r < sizeof refs; r++) {
+		memset(&d, 0, sizeof d);
+		d.k[RSXKIT_K_T0A][0][3] = 1.0f;
+		d.alpha_ref = refs[r];
+		CHECK(rsxkit_dsta_alpha_pass(&d, &b));
+		CHECK_EQ(b.alpha_ref, 255);
+		for (int t = 0; t <= 255; t++) {
+			bool a_pass = t >= refs[r];
+			bool b_pass = draw_alpha(&b, t / 255.0f, 0.0f, 0.0f) >= 1.0f;
+			if (a_pass != b_pass)
+				t_fail(__FILE__, __LINE__, "ref %u, alfa %d: el dibujo %s y la pasada %s", refs[r], t,
+				       a_pass ? "pasa" : "no", b_pass ? "pasa" : "no");
+			t_checks++;
+		}
+	}
+
+	/* Programa generado sin término constante: se agrega uno. */
+	memset(&d, 0, sizeof d);
+	d.nterms = 2;
+	d.factors[0][0] = RSXKIT_FP_T0A;
+	d.factors[0][1] = RSXKIT_FP_CA;
+	d.factors[1][0] = RSXKIT_FP_T1A;
+	d.k[0][0][3] = 1.0f;
+	d.k[1][0][3] = 0.5f;
+	CHECK(rsxkit_dsta_alpha_pass(&d, &b));
+	CHECK_EQ(b.nterms, 3);
+	CHECK_EQ(b.factors[2][0], 0);
+	for (int t = 0; t <= 255; t += 15)
+		CHECK(draw_alpha(&b, t / 255.0f, 1.0f - t / 255.0f, 0.5f) >= 1.0f);
+	/* Sin lugar para él, o con un programa propio, no se puede. */
+	d.nterms = RSXKIT_K_TERMS;
+	for (unsigned j = 0; j < RSXKIT_K_TERMS; j++)
+		d.factors[j][0] = RSXKIT_FP_C;
+	CHECK(!rsxkit_dsta_alpha_pass(&d, &b));
+	d.alpha_ref = 64;
+	CHECK(rsxkit_dsta_alpha_pass(&d, &b));  /* con prueba basta escalar */
+	d.program = (rsxkit_program *)&d;
+	CHECK(!rsxkit_dsta_alpha_pass(&d, &b));
+}
+
 void t_suite_fpgen(void)
 {
+	RUN(rsxkit_dsta_pass);
 	RUN(rsxkit_read_filter);
 	RUN(fpgen_refs_lincomb);
 	RUN(fpgen_refs_products);
