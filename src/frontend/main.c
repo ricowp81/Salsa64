@@ -3717,6 +3717,12 @@ static void stats(uint64_t now)
 		uint32_t cvg[4];
 		for (int k = 0; k < 4; k++)
 			cvg[k] = rs.alpha_cvg[k] - sw.rdp0.alpha_cvg[k];
+		/* Las pasadas del alfa de rsxkit (RSXKIT_DSTA_ONE), desde el informe anterior. */
+		static uint32_t dsta_prev[3];
+		uint32_t dsta[3];
+		rsxkit_dsta_stats(&dsta[0], &dsta[1], &dsta[2]);
+		uint32_t dp = dsta[0] - dsta_prev[0], ds = dsta[1] - dsta_prev[1], df = dsta[2] - dsta_prev[2];
+		memcpy(dsta_prev, dsta, sizeof dsta);
 		if (rb || rbw || mir || mirs || fmir || dmas || trsx || trd || tself || primes || lost || tfail || tabs ||
 		    bfail || tppe || tppel)
 			salsa64_log("gfx: framebuffer: %u copias a la RDRAM (%.2f ms c/u en presentación), la emulación "
@@ -3729,12 +3735,13 @@ static void stats(uint64_t now)
 				    rbw ? (rs.us_readback_wait - sw.rdp0.us_readback_wait) / 1e3 / rbw : 0.0,
 				    rs.readback_late - sw.rdp0.readback_late, mir, mirs, fmir, dmas, trsx, trd, tself, tppe,
 				    tppel, primes, pwaits, lost, tfail, tabs, bfail);
-		if (talpha || xalpha || falpha || calpha || cvg[0] || cvg[1] || cvg[2] || cvg[3])
+		if (talpha || xalpha || falpha || calpha || cvg[0] || cvg[1] || cvg[2] || cvg[3] || dp || ds || df)
 			salsa64_log("gfx: alfa en los destinos: %u destinos con alfa creados, %u texturas leídas de uno "
 				    "de ellos, %u rellenos o copias con su alfa, %u copias a la RDRAM con su alfa; "
 				    "cobertura de los dibujos: %u con alfa 1, %u con el de la memoria, %u con el del "
-				    "fragmento, %u con el mayor",
-				    talpha, xalpha, falpha, calpha, cvg[0], cvg[1], cvg[2], cvg[3]);
+				    "fragmento, %u con el mayor; alfa 1 en el RSX: %u con la pasada del alfa, %u en una "
+				    "pasada (el alfa ya era 1), %u sin poder (quedó el del fragmento)",
+				    talpha, xalpha, falpha, calpha, cvg[0], cvg[1], cvg[2], cvg[3], dp, ds, df);
 		if (rs.big8_sync != sw.rdp0.big8_sync || rs.big8_nosync != sw.rdp0.big8_nosync ||
 		    rs.big8_primes != sw.rdp0.big8_primes)
 			salsa64_log("gfx: copias big8: %u esperadas, %u sin esperar; %u hechas, cambiaron %u píxeles de la "
@@ -7803,6 +7810,18 @@ int main(int argc, char **argv)
 			    vb->used_current ? "videoConfigure con los valores vigentes del XMB"
 					     : "videoConfigure normal (otro modo que el vigente)",
 			    vb->tiles_active, vb->tiles_active ? ": " : "", vb->tiles);
+	}
+	{
+		/* El alfa que dejan los dibujos en un destino con alfa (rsxkit_draw.dst_alpha,
+		 * docs/framebuffer.md): lo que se lee de vuelta contra lo esperado. */
+		uint8_t a[RSXKIT_DSTA_TEST_N];
+		int st = rsxkit_dsta_selftest(a);
+		const uint8_t *e = rsxkit_dsta_expected;
+		bool ok = st == RSXKIT_OK && !memcmp(a, e, sizeof a);
+		salsa64_log("rsxkit: autoprueba dst_alpha ONE=%02x ONE+mezcla=%02x ONE+prueba=%02x ONE+descarte=%02x "
+			    "FRAG=%02x KEEP=%02x MAX=%02x/%02x (esperado %02x %02x %02x %02x %02x %02x %02x/%02x): %s",
+			    a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7],
+			    st != RSXKIT_OK ? "no se pudo" : ok ? "bien" : "MAL");
 	}
 	if (file_exists(SALSA64_DATA_DIR "/filtros-autoprueba")) {
 		bool ok = salsa64_filters_selftest();

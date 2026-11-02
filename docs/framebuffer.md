@@ -317,7 +317,20 @@ host (`src/host/raster.c`) hace lo mismo.
 
 Hasta la v0.2.15 los dibujos dejaban en el RSX el alfa del fragmento:
 `RSXKIT_DSTA_ONE` ponía la mezcla del canal alfa en ONE / ZERO, que copia el
-del fragmento en vez de dar 1, y el host suponía 1. Con las copias con alfa
+del fragmento en vez de dar 1, y el host suponía 1. La mezcla no puede dar
+una constante: el alfa sale de As·fs + Ad·fd y todos los factores
+multiplican (con `GCM_CONSTANT_ALPHA` da As·Ac; el primer intento con ese
+factor dejó los paneles en blanco en la PS3 aunque la HLE pedía alfa 1 en
+los 77 dibujos). rsxkit hace `RSXKIT_DSTA_ONE` en dos pasadas cuando el alfa
+del fragmento no es 1 en todo el dibujo: primero una solo en el canal alfa,
+con el mismo programa, los mismos vértices y la misma prueba de profundidad
+(sin escribirla), con el alfa llevado a 1 o más (que el RSX satura al
+escribir): con prueba de alfa (pasa α ≥ r) multiplicado por 1/r y probado
+contra 1, para que descarte los mismos fragmentos; sin ella, más 1 en el
+término constante. Después, el dibujo con `RSXKIT_DSTA_KEEP`. El log de cada
+5 s cuenta los dibujos con la pasada, los de una sola (el alfa ya era 1) y
+los que no se pudieron, y al arrancar «rsxkit: autoprueba dst_alpha …» dice
+lo que deja cada modo en el RSX. Con las copias con alfa
 de la v0.2.15 eso llegó a la RDRAM: Dr. Mario 64 dibuja una vez el fondo de
 la partida en una imagen de 328 × 240 (`214e00`), con los paneles
 translúcidos (marcador, frasco, el recuadro de Dr. Mario, VIRUS LEVEL, SPEED,
