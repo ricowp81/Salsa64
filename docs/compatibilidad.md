@@ -15,6 +15,7 @@ Las entradas antiguas conservan sus métodos de prueba como historia.
 | Juego | Estado | Notas |
 |---|---|---|
 | Conker's Bad Fur Day | desde el ascensor del final de Heist, la sala y Conker se ven en el host como con el microcódigo real (falta la PS3) | ahí el juego cambia a su variante «F3DEX.NoN» (mismo código que «F3DEXBG.NoN»), que por el texto se tomaba por F3DEX2: sin G_TRI4, pantalla negra con líneas. Ahora el código de Conker se reconoce por su CRC (`1B4ACE88` en palabras); `conker-ucode-viejo` vuelve al texto. La luz de la HLE sigue algo más baja que la del microcódigo real, como en el resto del juego |
+| Conker's Bad Fur Day (pelea de la bóveda) | sin tareas cortadas en el host (falta la PS3) | las estrellas de la esclusa, un dibujo cada una, y la nave llegan a ~2900 dibujos por tarea; el búfer de comandos pasa de 1280 a 1536 KB (3170 dibujos), sacados del arena de texturas |
 
 ## 2026-10-31 — Reporte #62 (Dr. Mario 64)
 
