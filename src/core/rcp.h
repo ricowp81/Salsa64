@@ -159,6 +159,10 @@ struct salsa64_gfx_backend {
 	bool turbo3d; /* familia experimental: apagada salvo petición explícita */
 	bool acclaim; /* variante optativa: solo se reconoce por CRC cuando está activa */
 	bool eurocom; /* variante optativa: solo se reconoce por CRC cuando está activa */
+	/* Interruptor conker-ucode-viejo: el microcódigo de Conker solo por su
+	 * texto («F3DEXBG»), como antes de #68; si no (por omisión), también sus
+	 * otras variantes («F3DEX.NoN»…), por el CRC de su código (rsp.c). */
+	bool conker_text_only;
 };
 
 /* ABI de las listas de audio (alist): cada microcódigo de audio numera y
@@ -433,6 +437,9 @@ struct salsa64_vi {
 	uint64_t field_cycles;  /* duración del campo en curso */
 	struct salsa64_sched *sched;
 	bool bob_full_frame;    /* diagnóstico: conservar campos en cuadros completos */
+	/* Los cuadros completos escalados (Y_SCALE entre 1 y 2: FIFA 99) vuelven
+	 * a presentarse por campos, como hasta la v0.2.15 (vi-escalado-campos). */
+	bool bob_scaled_frame;
 };
 
 /* Imagen que saca el VI: la parte visible del framebuffer en la RDRAM. */

@@ -1,5 +1,280 @@
 # Estado
 
+## 2026-11-02 — #68 (2), Conker: en la pelea de la bóveda los modelos aparecen y desaparecen
+
+- En la PS3, con el arreglo de abajo (Chapters → Heist → The Vault): la cinemática y la pelea se ven,
+  pero en la pelea (898–979 s del log) las ventanas de 5 s dicen 13, 19 y hasta 95 «tareas
+  cortadas» de 150, con 2464–2616 dibujos y 6043–7608 triángulos por tarea.
+- En el host, el mismo recorrido (estado de Chapters de #3 con los bytes de capítulos de la base de
+  trucos y el mando por guion; la pelea con pulsaciones al azar): 316 tareas cortadas con banderas
+  0x05 (`GFX_RES_CMD_FULL`). Era el búfer de comandos: 1280 KB, 2642 dibujos de 496 bytes, lleno
+  en cada tarea cortada. Con 4 MB, ninguna cortada y el pico de una tarea es 1400 KB (2890
+  dibujos); los vértices llegan a 813 KB de 2 MB y el arena de texturas a 0. Son las estrellas de
+  la esclusa, un dibujo cada una (traen su color primario), antes de la nave y los modelos: en una
+  tarea cortada sale solo el cielo estrellado.
+- Arreglo: comandos de 1280 a 1536 KB (3170 dibujos, 10 % sobre el pico medido) en la PS3
+  (`src/rdp/rdp.c`) y en el host. Como en las veces anteriores, sale del arena de texturas, que
+  baja de 2,625 a 2,25 MB por juego de búferes (con los 768 KB de la interpolación, que crecen con
+  los comandos); el juego de búferes sigue en 6,5 MB y la memoria principal no cambia
+  (`_Static_assert` del total y de un arena de al menos 2 MB). El arena casi no se usa con la
+  caché: en los logs de la PS3 a mano, la media más alta por ventana es 336 KB por tarea. Sin
+  interruptor: solo es capacidad.
+- `salsa64-run` dice al final el pico de cada búfer de salida en una tarea (comandos con sus
+  dibujos, vértices y texturas) y en qué campo.
+- Con 1536 KB: la bóveda y tres peleas al azar sin tareas cortadas (picos 1345–1400 KB); con
+  1280 KB, la misma pelea desde el campo 10500 corta 181 tareas en 400 campos. Escenas del host y
+  Conker con «F3DEXBG.NoN» idénticas a main. Falta la PS3: que el log de la pelea diga 0 tareas
+  cortadas y que los modelos no parpadeen.
+
+## 2026-11-02 — #68, Conker: tras el ascensor del final de Heist, cinemática rota y pantalla negra con líneas
+
+- Log de la PS3 (v0.2.15): todo el juego con «F3DEXBG.NoN fifo 2.08» (imagen Conker del SPE 0) hasta
+  la tarea 182 262, al tomar el ascensor: «cambio de imagen Conker → F3DEX2» y el microcódigo
+  «RSP Gfx ucode F3DEX.NoN fifo 2.08» **en la misma dirección (0x0bebb0) y con el mismo CRC-32 del
+  código** (99E222AC, 1B4ACE88 en palabras). Desde ahí no vuelve a la imagen Conker; tras dos
+  reinicios, el juego arranca con F3DEXBG y al cargar la partida pasa otra vez a F3DEX2. Ningún aviso
+  de destinos, copias, z ni del RSX que cambie en ese momento.
+- Reproducido en el host con el estado del reporte (su ROM era una traducción al español, de otra
+  cabecera; se cargó con la USA en una copia con esa cabecera, fuera del repo): con la HLE, 3952
+  comandos por tarea, 98 triángulos y **531 comandos sin implementar (último 0x18)**; la imagen es
+  negra con unas líneas, como en el reporte. Con `--lle=all`, la sala con Conker (2338 triángulos
+  por tarea, 0 sin implementar).
+- Causa: el juego trae un solo código de 4 KB y ocho segmentos de datos, «F3DEX», «F3DEXBS»,
+  «F3DEXBG» y «F3DEXBGBS», con y sin «.NoN» (en la ROM, cada 0x6C0 bytes), y copia el que toca en
+  un búfer fijo. Entre ellos solo cambian el texto, las constantes del recorte cercano (DMEM 0x1AC,
+  0x666, 0x6A6) y el largo de una carga de código (DMEM 0x6AC: 0x318 en BG, 0x388 en F3DEX, 0x3A0
+  en BS). La detección iba por el texto: «F3DEX.NoN fifo 2.08» se tomaba por un F3DEX2, que no
+  tiene G_TRI4 (0x10–0x1F): casi todos los triángulos quedaban sin dibujar y los vértices de 16
+  bytes con luces de Rare se leían como los de F3DEX2.
+- Que «F3DEX» y «F3DEXBG» son el mismo microcódigo para la HLE, medido con el LLE: en la cueva del
+  Poo (con «F3DEXBG.NoN»), el LLE con el largo de carga de «F3DEX» (DMEM 0x6AC = 0x388) da las 50
+  tareas bit a bit iguales que con el suyo, y el código de más (IMEM 0x5F0–0x65F) sí se ejecuta
+  (14 190 entradas). Al revés, en la escena del reporte el LLE con el largo de «F3DEXBG» se cuelga
+  en la segunda tarea (60 M de instrucciones): «F3DEX» vuelve a cargar esos 0x70 bytes porque allí
+  algo pisa la IMEM, y por eso el juego lo usa en esa parte.
+- Arreglo (`core/rsp.c`): el código de Conker se reconoce por el CRC-32 de sus 4 KB (palabras al
+  revés 0x1B4ACE88) antes que el texto, y cualquiera de las ocho variantes va a F3DEXBG (imagen
+  Conker del SPE 0, sin cambio de imagen); sin recorte cercano si el nombre dice «.No» («F3DEXBGBS.No»
+  no cabe entero). El CRC de los 4 KB se calcula una vez por tarea para las tres variantes por
+  código (Acclaim, Eurocom, Conker), antes eran dos cálculos. Interruptor `conker-ucode-viejo` en
+  `/dev_hdd0/salsa64/` (en el host, `SALSA64_GFX_CONKER_VIEJO=1`): solo el texto, como antes.
+- Antes y después contra el LLE (mismo estado, 300 y 1800 campos sin tocar el control): con el
+  arreglo, la sala, Conker y los objetos en su sitio (0 comandos sin implementar, 1156 triángulos
+  por tarea); `--lle-check-gfx` da 50 de 50 tareas «distintas», del mismo tipo que el resto de
+  Conker con «F3DEXBG.NoN» (luz de la HLE más baja que la del LLE: razón HLE/LLE por canal 0,92,
+  0,84, 0,77 en esta sala; 0,80, 0,79 en la cueva del Poo y 0,97, 0,96, 0,99 en la entrada del
+  maizal, las dos con «F3DEXBG.NoN» y 50 de 50 «distintas» también). Sin ares: el estado no se
+  puede llevar a ares y no hay partida del reportero para llegar a esa sala.
+- Otros juegos: las 8 escenas del host (`tools/escenas-host.sh`) idénticas a main; Conker con
+  «F3DEXBG.NoN» (título, Chapters, maizal y cueva del Poo, estados de #3) idéntico a main.
+- Prueba: `rsp_detect_gbi_conker` (las ocho variantes con el CRC: F3DEXBG y su plano cercano; con
+  el interruptor, el texto; otro código con el mismo texto, F3DEX2). Falta la PS3: el reportero,
+  desde su estado (o desde la partida tras el ascensor), y con `conker-ucode-viejo` para ver la
+  falla de antes.
+
+## 2026-11-02 — #69, FIFA 99: la imagen vibra (cuadros completos escalados y entrelazados)
+
+- Reporte (PS3, paquete con el arreglo del espejo): la imagen de FIFA vibra en el menú y en el
+  partido; el log dice «cuadros entrelazados completos tejidos (vi-campos)», o sea el tejido de
+  #39 activo.
+- VI por campo (`salsa64-run --trace-vi`, que ahora da CONTROL, WIDTH, H/V_VIDEO, X/Y_SCALE, el
+  bit de campo y, con `--gfx-frame`, lo que presentaría la PS3): menús 512 × 384 a Y_SCALE 1,6
+  (0x02000666, 379 renglones) y partido 480 × 360 a 1,5 (0x02000600, 356), SERRATE, dos búferes.
+  En los campos impares el origen está en la fila 1 del búfer y V_VIDEO es 0x002301FD; en los
+  pares, en la fila 2 y 0x002501FF; y casi cada campo es del otro búfer. ares (GDB, 24 muestras
+  en la intro y la demostración) da el mismo emparejamiento. En la consola los dos campos ponen
+  la misma fila del búfer en el mismo renglón de la pantalla (a 0,2–0,25 filas): la imagen está
+  quieta.
+- Causa: el tejido de #39 solo reconoce 640 × 480 a Y_SCALE 2,0 con 400 renglones o más; FIFA no
+  entra, y la ventana común solo se sostenía dentro de un mismo búfer: en la PS3 cada campo se
+  presentaba desde su fila (1, 2, 1, 2…: en el menú 30 saltos en 30 campos, en el partido 7 de
+  11), una fila de 360 arriba y abajo a 60 Hz.
+- Arreglo (`core/vi.c`): también es un cuadro completo un búfer contiguo leído a Y_SCALE entre 1 y
+  2 (cada renglón del campo avanza más de una fila): `weave`, vpos sin el bit de campo y la misma
+  ventana aunque cambie el búfer. Interruptor `vi-escalado-campos` (en el host,
+  `SALSA64_VI_ESCALADO_CAMPOS=1`); `vi-campos` sigue apagando los dos. Con el arreglo, 0 saltos en
+  el menú y en el partido (fila 1 siempre).
+- Otros juegos, 2400 campos desde el arranque sin tocar el control, con y sin el cambio:
+  Indiana Jones, GoldenEye, Perfect Dark, Racer y Donkey Kong 64 presentan exactamente lo mismo en
+  cada campo. Cambian, con el mismo patrón que FIFA: Resident Evil 2 (436 × 382 a 1,75, filas 0/1;
+  saltos de 604 a 8) y Rogue Squadron (640 × 335 a 1,53, dos búferes; de 1856 a 7), donde la
+  imagen también debía vibrar. Pruebas `scaled_interlaced_frame` (test_vi) y
+  `targets_present_scaled_interlaced` (test_targets, con la secuencia del partido). Falta la PS3.
+
+## 2026-11-02 — #69, FIFA 99: pantalla negra con «Continue» tras el partido (espejo del framebuffer)
+
+- Reporte (v0.2.15, HEN): al acabar un partido y darle a continuar, pantalla negra. En el log, 13
+  campos después de la A (el juego ya copiaba el código de la pantalla siguiente: 7638 bloques
+  invalidados por escrituras del CPU en 0x0e08b8–0x11fe41): «cpu: fallo AdEL … pc 0x8005B344,
+  dirección 0x10003»; después 92–98 % en bucles de espera, ninguna tarea gráfica y audio en
+  silencio (el hilo del juego quedó parado).
+- Host, con el estado del reporte (la «Post Game Menu» con «Continue» elegido) y la A: el mismo
+  AdEL en el mismo pc y la misma dirección con el intérprete, también con `-DSALSA64_CPI=2` (no es
+  del ritmo del CPU). Volcado crudo: el hilo 1 (prioridad 60) parado en 0x8005B344, que es el
+  `free` del heap del juego (bloques con cabecera de 16 bytes antes del puntero: «BM», banderas,
+  tamaño, siguiente, anterior); le piden soltar 0x801abc80 (el segundo framebuffer del partido,
+  de 0x800ce0a8) y lee el anterior en 0x00010001: los 64 bytes 0x1abc40–0x1abc7f, cabecera
+  incluida, son negro de RGBA5551. Ya están así en el estado guardado.
+- Causa, en el log de la PS3: al empezar el partido (campo ~4810, nueve minutos antes) el juego
+  cambia los framebuffers de 512 × 384 del menú (0x157640, 0x1b76c0) por los de 480 × 360 del
+  partido (0x157640, 0x1abcc0) en la misma memoria; el primero acaba en 0x1abc40 y la cabecera del
+  bloque del segundo queda en 0x1abc70. «espejo del framebuffer a la RDRAM 0x157640–0x1b7640 (ancho
+  512…) de la tarea 3678 (3679 terminadas): 1 de 3456 líneas … sin escribir (la primera en
+  0x1abc80)»: el espejo del último cuadro del menú llegó después de la primera tarea del partido,
+  que había renovado la huella de la línea 0x1abc00 (sus filas llegan a 0x1abc40) con la cabecera
+  ya escrita; la guarda la dio por buena y el espejo escribió encima su negro (fila 337, columnas
+  256–287). La línea 0x1abc80, que esa tarea no tocó, sí se salvó.
+- Referencias: en el host, reponiendo la cabecera en el estado (`--poke` con
+  `424d0140 00054640 802002f0 801575f0`, sacada de los bloques vecinos) «Continue» sigue a la tabla
+  de posiciones de la liga; y el recorrido del log desde el arranque (los botones de la PS3 como
+  `--pad`) llega al mismo partido (AC Milan – R Madrid) con esa misma cabecera intacta (el host
+  escribe la RDRAM al dibujar, como el RDP, y no tiene espejos tardíos); al acabar el partido
+  (campo ~36600), START y la A en «Continue» siguen a la tabla de posiciones sin excepciones.
+- Arreglo (`rdp_claim_ring`, targets.h): al terminar cada tarea el hilo de emulación anota, junto
+  con las huellas, qué filas de qué color image (dirección y bytes por fila) pudieron tocar sus
+  dibujos (anillo de 64); el espejo del framebuffer de la tarea T (contada como `rdp.finished`,
+  `slot_fin` por ranura) no escribe las líneas que una color image distinta dibujó en una tarea
+  posterior. La misma color image vuelta a dibujar y otra de la misma tarea no cuentan; si el anillo
+  perdió entradas, como antes. Solo el espejo del framebuffer. Interruptor `espejo-pisa-otras`; el
+  log de 5 s suma los espejos y líneas recortados así. Prueba `targets_claims` con la memoria del
+  juego. Falta la PS3 (un partido nuevo: el estado del reporte ya trae la cabecera rota).
+
+## 2026-10-31 — #3, Conker: el Great Mighty Poo no abre la boca (PLAY sin confirmar, arreglo por juego)
+
+- Reproducido en el host con el estado de la ronda anterior en Chapters (partida nueva,
+  WELDERSBENCH, Sloprano marcado) y Sweet Melody sin tocar el control: el Poo aparece, la boca no
+  se mueve, la escena se queda y la música cae desde el campo ~16950 (RMS ~1000 contra 3000–4000).
+- Causa (vigía de la RDRAM y de instrucciones, build con `SALSA64_WATCH_MEM`; el código del juego
+  va por la TLB en 0x10000000 → física 0): el gestor de música (0x1000D2F8, hilo 3, una vez por
+  cuadro y canal) guarda por canal un registro de la canción (raíces en 0x800417B0). Para empezar
+  una canción pone el registro y manda PLAY (0x100084D8 → 0x10017AA0: un evento en la cola del
+  reproductor 0x8007B820, que el hilo 4 procesa en su cuadro de audio, cada 2 campos). En cada
+  cuadro, si ve el reproductor parado (+0x2C = 0), da la canción por terminada y borra el
+  registro. Al entrar a la cueva: PLAY en el campo 13150, el cuadro siguiente del juego llega en
+  el 13151 (1,28 M ciclos después), ve el reproductor parado y borra el registro; el hilo de audio
+  procesa el PLAY en el 13152 (2,84 M ciclos después del PLAY). La canción suena huérfana; en el
+  jefe (campo 16944) el juego la vuelve a pedir, la para (espera activa en 0x10008CE8 hasta el
+  16952), manda PLAY y en el 16953 vuelve a borrar el registro (procesado en el 16954). Sin
+  registro el gestor ya no atiende la canción (ni llama a su función, tabla en 0x8002B07C): el
+  Poo no abre la boca y la escena espera.
+- Descartes y variantes: la HLE de audio no toca el estado del reproductor (lo cambia el hilo 4
+  en el CPU). Con `--lle=all --lle-check-audio` (385 de 2450 tareas con diferencias, sobre todo
+  MP3 de voces) este recorrido funciona, pero por fase: el PLAY sale en el 13151 y se procesa en
+  el 13152, antes del cuadro del gestor. Igual entrando a Chapters desde el arranque (partida del
+  autor y los bytes 0x800E9D01–04 = 0xFF de la base de trucos de mupen64plus): PLAY en el 8151,
+  procesado en el 8152. Con `-DSALSA64_CPI=2`, sin arreglo, el recorrido malo funciona (el Poo
+  abre la boca y la escena sigue). El fallo depende de en qué fase cae el PLAY respecto del
+  cuadro de audio.
+- Referencia (ares por GDB, intérprete, mismo recorrido por Chapters desde el arranque; el control
+  se fuerza parcheando `osContGetReadData` y el campo es el contador de retrazados del juego,
+  0x800429BC; el guion va 300 campos más tarde que en el host): registro creado en el 8519, PLAY en el 8529 (línea 0), procesado en el 8531 y el
+  siguiente cuadro del gestor en el 8533 (línea 166), ya con el reproductor sonando. En la consola
+  del PLAY al siguiente cuadro del gestor pasan ~4,3 campos, contra 0,8–1,0 en el host: el cuadro
+  de audio (cada 2 campos) siempre llega antes. La canción entra 631 campos después de elegir
+  Sweet Melody en ares y 552 en el host (con y sin arreglo).
+- Arreglo (`core/gamefix.c`, tercer arreglo por juego): la función que manda PLAY (0x100084D8,
+  25 palabras, solo con el código original y la ROM USA NFUE) hace lo mismo y además espera a
+  que el estado deje de ser 0, como el juego ya espera el STOP en 0x10008CE8 (tope de 0x1E0000
+  vueltas, ~6 campos). Interruptor `conker-musica-vieja` (en el host,
+  `SALSA64_GAMEFIX_OFF=conker-musica-vieja`). Con el arreglo: PLAY en el 13150, la función
+  vuelve en el 13152 tras el PLAY procesado, el registro sigue, el Poo abre la boca y la escena
+  sigue; por Chapters desde el arranque, igual (vuelve en el 8152). Con el interruptor, el registro se
+  borra en el 13151 como antes.
+- Pruebas: suite gamefix (palabras exactas, interruptor, otra región y otro CRC intactos, y la
+  función parcheada corrida en el intérprete: espera con el reproductor parado, sin PLAY si suena,
+  PLAY sin esperar en pausa, tope). Falta la PS3.
+
+## 2026-10-30 — #51, Donkey Kong 64: el DK Rap sin música (gestor de música, arreglo por juego)
+
+- En el host, sin tocar el control y con la HLE: la música de la intro se corta hacia los 12 s
+  del audio del AI y entra a los ~106 s (solo voces y ruidos entre medio), igual que en el reporte.
+  `--lle=all` la arregla; `--lle=all` solo para el audio no (la HLE de audio no es: naudio da lo
+  mismo que el microcódigo salvo dos bytes de un búfer de retardo), ni la duración de la tarea de
+  audio. Lo decide el ritmo de los cuadros: una sola tarea gráfica (la primera del juego, campo
+  176) que dure ≥ 361 000 ciclos, o `rsp-ritmo` al 100 % (al 96 % ya falla: margen del 4 %).
+- Causa (volcado de la RDRAM y vigilancia de escrituras, sin material de Nintendo): el gestor de
+  música (0x80602600, una vez por cuadro) pide la canción 0x4B en la casilla 0. Carga y PLAY
+  (0x8060a6a0) dejan el estado de la petición (0x80745924) en 1; pasa a 2 cuando ve el
+  reproductor en AL_PLAYING. Si lo ve parado con estado ≠ 2, lo para, vuelve a cargar la canción
+  (0x10123098, 0x125E bytes) y manda otro PLAY. Al cambiar a la escena del rap (campo ~826) cabe
+  un cuadro de un retrazado (retrazados 12, 2, 1, 2…); desde ahí el hilo principal corre en la
+  fase de campo contraria y cada recarga cae ~100 000 ciclos antes del cuadro del hilo de audio:
+  el PLAY nunca se confirma y la canción se recarga cada cuadro durante ~96 s, hasta que la fase
+  cambia. En ares (GDB, puntos de parada en la carga y en el paso a estado 2): una sola carga en
+  el retrazado 911 y estado 2 en el 913.
+- Arreglo (`core/gamefix.c`, ahora con varios arreglos por ROM y un interruptor por arreglo): 20
+  palabras en 0x806029DC–0x80602A28; con estado 1 el gestor pasa a la siguiente casilla en vez de
+  recargar; 0 carga y 2 siguen igual. Interruptor `dk64-musica-vieja` (en el host,
+  `SALSA64_GAMEFIX_OFF=dk64-musica-vieja`). Con el arreglo, la música entra a los 12,75 s del audio
+  sin `rsp-ritmo` y con él, y la canción se carga una vez.
+- Falta la PS3.
+
+## 2026-10-31 — #62, Dr. Mario 64: paneles en blanco (el bit de alfa es la cobertura)
+
+- Reporte (v0.2.15, fotos en la PS3): en la partida salen en blanco el interior del frasco, el
+  marcador (TOP/SCORE/TIME), el recuadro de Dr. Mario y «MED», con una mancha oscura y una raya
+  roja que tiembla en el frasco; con `copia-sin-alfa` todo bien; en la v0.2.14 también.
+- Datos (traza de la HLE y volcados del host): al entrar a la partida (y a la demostración que
+  sale sola tras el título) el juego dibuja una vez el fondo en una imagen de 328 × 240
+  (`214e00`): fichas CI8 en ciclo 1 (CLAMP, FORCE_BL) y encima los paneles translúcidos en XLU
+  (othermode L `0c184240` y `00504241`: CVG_DST_FULL, FORCE_BL, IM_RD) con el alfa de una máscara
+  I4 o el del primitivo, 0,375. En cada cuadro la pega en COPY con prueba de alfa (tiras de
+  328 × 6) leyéndola de la RDRAM (destino viejo).
+- Causa: en una imagen de 16 bits el RDP guarda en el bit de alfa la cobertura, no el alfa de la
+  mezcla (ZAP: 7, el bit en 1). El RSX guardaba el alfa del fragmento: `RSXKIT_DSTA_ONE` ponía la
+  mezcla del canal alfa en ONE / ZERO, que lo copia (el «alfa 1» de 1d30178 nunca fue tal). Desde
+  la v0.2.15 ese alfa llega a la copia (49063599): los paneles quedaban con el bit en 0, la copia
+  COPY los descartaba y se veía lo que había debajo (blanco, y en el frasco la estela de la
+  píldora). El host no lo reproducía por dos diferencias con la PS3: suponía alfa 1 y no copiaba a
+  la RDRAM imágenes de otro ancho que el VI de más de 64 KB (el fondo salía de la RDRAM sin
+  dibujar).
+- ares (demostración, volcado en la RDRAM): `214e00` con el bit en 1 en las 76 800 posiciones
+  dibujadas. El host con el arreglo: idéntico bit a bit (9 píxeles con el color a más de 2 pasos);
+  con el alfa del fragmento (la v0.2.15), 19 789 en 0 (los paneles).
+- Arreglo: la HLE calcula el bit por dibujo (`gfx_draw.cvg_bit`, en el relleno de `prim_tile`,
+  que pasa a 16 bits: el tamaño del dibujo no cambia): 1 en CLAMP y ZAP, el de la memoria en WRAP
+  y SAVE con IM_RD, el del alfa con CVG_X_ALPHA sin FORCE_BL, el mayor con CVG_X_ALPHA, FORCE_BL
+  e IM_RD; el texel en COPY y el color en FILL (docs/framebuffer.md). rsxkit: `RSXKIT_DSTA_ONE`
+  da 1 de verdad (dos pasadas si el alfa del fragmento no es 1: ver abajo) y hay
+  `RSXKIT_DSTA_KEEP` (máscara sin el alfa) y `RSXKIT_DSTA_MAX` (ecuación MAX). `src/rdp/rdp.c`
+  los usa; interruptor `alfa-fragmento` (todo con el alfa del fragmento, como la v0.2.15); el log
+  de cada 5 s cuenta los dibujos por modo. Host: lo mismo (`SALSA64_ALFA_FRAGMENTO=1`) y copia
+  las imágenes grandes de otro ancho como la PS3.
+- `salsa64-run --ares` compara además el bit de alfa con el de la consola
+  (`SALSA64_ALFA_EN_TODAS=1` en todas las de 16 bits). En 12 volcados de ares (Dr. Mario 64,
+  LEGO Racers, Star Fox 64, Conker, Hydro Thunder, GoldenEye, Super Odyssey 64, Snap) la
+  cobertura acierta 94–100 % de los píxeles y el alfa del fragmento 3–100 % (GoldenEye 3 %);
+  lo que queda son bordes con cobertura parcial (el RSX no la tiene).
+- Verificado en el host: Dr. Mario 64 en la demostración y en una partida clásica (pad desde el
+  título) sin paneles en blanco; con `SALSA64_ALFA_FRAGMENTO=1` salen como en las fotos de la
+  PS3, con la mancha y la raya roja en el frasco (la estela de la píldora: el fondo transparente
+  deja ver los cuadros anteriores). LEGO Racers: en el volcado de ares de la carrera el bit de
+  las imágenes de los autos (32 × 32) coincide en 997 de 1023 píxeles (los otros, bordes) y el
+  cuadro (`--pasadas 2`) da lo mismo que main (32,31 dB en 4×4); `raster_alpha_copy` pasa.
+  De 20 escenas del host (las 9 de `tools/escenas-host.sh`, F-Zero X en dos, Worms, Mario
+  Tennis, Paper Mario, Smash, Snap, Conker, LEGO Racers y el título y la demostración de Dr.
+  Mario), 19 idénticas a main; cambia la demostración de Dr. Mario (en main el host no copiaba su
+  fondo y salía ruido). Con el alfa del fragmento las mismas 19 siguen idénticas: en lo medido,
+  lo único que cambia en la PS3 respecto de la v0.2.15 es Dr. Mario. 821 pruebas unitarias sin fallos (nuevas
+  `gfx_cvg_bit` y `raster_alpha_cvg`). Pila de los SPE: holgura 2304 / 2544 / 14448 / 3328 /
+  2032 / 4656 / 2704 (32 bytes más de cadena y ~128 de código por imagen; mínimo 1536).
+- PS3 (paquete de prueba con la primera versión, 2026-11-02): el fondo seguía en blanco con «77
+  con alfa 1» en el log. La primera versión daba alfa 1 con el factor `GCM_CONSTANT_ALPHA` y eso
+  no puede funcionar: la mezcla da As·fs + Ad·fd y el factor multiplica (As·Ac = el del
+  fragmento). El host suponía «1» y por eso pasaba. Ahora rsxkit hace `RSXKIT_DSTA_ONE` en dos
+  pasadas cuando el alfa del fragmento no es 1 en todo el dibujo: una solo en el alfa, con el
+  mismo programa, vértices, tijeras y prueba de profundidad sin escribirla, y el alfa llevado a 1
+  o más (×1/ref con la prueba de alfa contra 1, para descartar lo mismo; +1 en el término
+  constante sin prueba), y después el dibujo con `KEEP`. Costo: un dibujo más (solo alfa, sin
+  escribir z) por cada dibujo con alfa no constante en un destino con alfa; en Dr. Mario, 77 en
+  la tarea del fondo. Al arrancar, `rsxkit: autoprueba dst_alpha ONE=… ONE+mezcla=… ONE+prueba=…
+  ONE+descarte=… FRAG=… KEEP=… MAX=…/… (esperado ff ff ff 60 20 60 60/a0): bien|MAL` dice lo que
+  deja cada modo en el RSX real; el informe de 5 s suma «alfa 1 en el RSX: N con la pasada del
+  alfa, N en una pasada, N sin poder».
+- Falta la PS3: la autoprueba en «bien», los paneles sin blanco, que LEGO Racers siga sin el
+  cuadro y que no cambie nada visible en los juegos con render a textura (Mario Tennis, logos de
+  Rogue Squadron). Aparte, las píldoras que no se ven mientras caen (otro trabajo).
+
 ## 2026-10-29 — Pila del SPE 0 tras unir F-Zero X afín y Vigilante 8 (rama pila-spe0)
 
 - Con las dos ramas unidas (main 19f4cfa) el paquete no se armaba: holgura 800 / 1024 / 12944 /

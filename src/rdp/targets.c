@@ -724,6 +724,61 @@ bool rdp_dma_since(const struct rdp_dma_ring *r, uint32_t lo, uint32_t hi, uint3
 	return false;
 }
 
+void rdp_claim_note(struct rdp_claim_ring *r, uint32_t addr, uint32_t line, uint32_t lo, uint32_t hi, uint32_t task)
+{
+	if (hi <= lo)
+		return;
+	uint32_t n = __atomic_load_n(&r->n, __ATOMIC_RELAXED);
+	/* Las de la misma tarea van seguidas: si ya está esta color image, se
+	 * agranda (una tarea cambia de color image varias veces: la z, el
+	 * framebuffer, otra vez el framebuffer). */
+	for (uint32_t i = 0; i < n && i < RDP_CLAIM_RING; i++) {
+		uint32_t k = (n - 1 - i) % RDP_CLAIM_RING;
+		if (r->e[k].task != task)
+			break;
+		if (r->e[k].addr == addr && r->e[k].line == line) {
+			uint32_t nlo = r->e[k].lo < lo ? r->e[k].lo : lo, nhi = r->e[k].hi > hi ? r->e[k].hi : hi;
+			r->e[k].lo = nlo;
+			r->e[k].hi = nhi;
+			__atomic_thread_fence(__ATOMIC_RELEASE);
+			return;
+		}
+	}
+	uint32_t k = n % RDP_CLAIM_RING;
+	r->e[k].lo = lo;
+	r->e[k].hi = hi;
+	r->e[k].addr = addr;
+	r->e[k].line = line;
+	r->e[k].task = task;
+	__atomic_store_n(&r->n, n + 1, __ATOMIC_RELEASE);
+}
+
+int rdp_claims_after(const struct rdp_claim_ring *r, uint32_t addr, uint32_t line, uint32_t lo, uint32_t hi,
+		     uint32_t task, struct rdp_claim *out, int max)
+{
+	uint32_t n = __atomic_load_n(&r->n, __ATOMIC_ACQUIRE);
+	if (n > RDP_CLAIM_RING && (int32_t)(r->e[n % RDP_CLAIM_RING].task - task) > 0)
+		return -1;  /* la más vieja que queda ya es posterior: pudo perderse alguna */
+	uint32_t m = n < RDP_CLAIM_RING ? n : RDP_CLAIM_RING;
+	int k = 0;
+	for (uint32_t i = 0; i < m && max > 0; i++) {
+		uint32_t j = (n - 1 - i) % RDP_CLAIM_RING;
+		uint32_t elo = r->e[j].lo, ehi = r->e[j].hi;
+		if ((int32_t)(r->e[j].task - task) <= 0 || (r->e[j].addr == addr && r->e[j].line == line) ||
+		    elo >= hi || ehi <= lo)
+			continue;
+		if (k < max) {
+			out[k].lo = elo;
+			out[k].hi = ehi;
+			k++;
+		} else {
+			out[max - 1].lo = elo < out[max - 1].lo ? elo : out[max - 1].lo;
+			out[max - 1].hi = ehi > out[max - 1].hi ? ehi : out[max - 1].hi;
+		}
+	}
+	return k;
+}
+
 uint32_t rdp_guard_hash(const uint8_t *line)
 {
 	/* Suma y o exclusivo rotado de las 16 palabras dobles: cualquier

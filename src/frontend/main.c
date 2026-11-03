@@ -1653,8 +1653,6 @@ static uint8_t *rom_open_paged(FILE *f, const char *path, uint32_t len, bool for
 static uint8_t *read_rom_file(const char *path, uint8_t *buf, uint32_t cap, uint32_t *size)
 {
 	rom_no_memory = false;
-	/* RAR/7z: leer primero la cabecera y después extraer por completo a RAM.
-	 * ZIP conserva su lector y sus comprobaciones sin modificaciones. */
 	if (salsa64_rarrom_is_path(path) || salsa64_7zrom_is_path(path)) {
 		uint8_t header[SALSA64_ROM_HEADER_SIZE];
 		uint32_t rom_len = 0, actual_len = 0;
@@ -3748,6 +3746,15 @@ static void stats(uint64_t now)
 		uint32_t talpha = rs.targets_alpha - sw.rdp0.targets_alpha, xalpha = rs.tex_alpha - sw.rdp0.tex_alpha;
 		uint32_t falpha = rs.alpha_fills - sw.rdp0.alpha_fills;
 		uint32_t calpha = rs.alpha_copies - sw.rdp0.alpha_copies;
+		uint32_t cvg[4];
+		for (int k = 0; k < 4; k++)
+			cvg[k] = rs.alpha_cvg[k] - sw.rdp0.alpha_cvg[k];
+		/* Las pasadas del alfa de rsxkit (RSXKIT_DSTA_ONE), desde el informe anterior. */
+		static uint32_t dsta_prev[3];
+		uint32_t dsta[3];
+		rsxkit_dsta_stats(&dsta[0], &dsta[1], &dsta[2]);
+		uint32_t dp = dsta[0] - dsta_prev[0], ds = dsta[1] - dsta_prev[1], df = dsta[2] - dsta_prev[2];
+		memcpy(dsta_prev, dsta, sizeof dsta);
 		if (rb || rbw || mir || mirs || fmir || dmas || trsx || trd || tself || primes || lost || tfail || tabs ||
 		    bfail || tppe || tppel)
 			salsa64_log("gfx: framebuffer: %u copias a la RDRAM (%.2f ms c/u en presentación), la emulación "
@@ -3760,10 +3767,13 @@ static void stats(uint64_t now)
 				    rbw ? (rs.us_readback_wait - sw.rdp0.us_readback_wait) / 1e3 / rbw : 0.0,
 				    rs.readback_late - sw.rdp0.readback_late, mir, mirs, fmir, dmas, trsx, trd, tself, tppe,
 				    tppel, primes, pwaits, lost, tfail, tabs, bfail);
-		if (talpha || xalpha || falpha || calpha)
+		if (talpha || xalpha || falpha || calpha || cvg[0] || cvg[1] || cvg[2] || cvg[3] || dp || ds || df)
 			salsa64_log("gfx: alfa en los destinos: %u destinos con alfa creados, %u texturas leídas de uno "
-				    "de ellos, %u rellenos o copias con su alfa, %u copias a la RDRAM con su alfa",
-				    talpha, xalpha, falpha, calpha);
+				    "de ellos, %u rellenos o copias con su alfa, %u copias a la RDRAM con su alfa; "
+				    "cobertura de los dibujos: %u con alfa 1, %u con el de la memoria, %u con el del "
+				    "fragmento, %u con el mayor; alfa 1 en el RSX: %u con la pasada del alfa, %u en una "
+				    "pasada (el alfa ya era 1), %u sin poder (quedó el del fragmento)",
+				    talpha, xalpha, falpha, calpha, cvg[0], cvg[1], cvg[2], cvg[3], dp, ds, df);
 		if (rs.big8_sync != sw.rdp0.big8_sync || rs.big8_nosync != sw.rdp0.big8_nosync ||
 		    rs.big8_primes != sw.rdp0.big8_primes)
 			salsa64_log("gfx: copias big8: %u esperadas, %u sin esperar; %u hechas, cambiaron %u píxeles de la "
@@ -3798,11 +3808,13 @@ static void stats(uint64_t now)
 		}
 		uint32_t gcop = rs.guard_copies - sw.rdp0.guard_copies, glin = rs.guard_lines - sw.rdp0.guard_lines;
 		uint64_t gtb = rs.tb_guard_mark - sw.rdp0.tb_guard_mark;
+		uint32_t ccop = rs.claim_copies - sw.rdp0.claim_copies, clin = rs.claim_lines - sw.rdp0.claim_lines;
 		if (gcop || gtb)
 			salsa64_log("gfx: guarda contra el CPU: %u copias tardías con %u líneas de 128 bytes sin escribir "
 				    "(algo que no es el RDP las cambió después de su tarea); huellas %.3f ms por tarea en el "
-				    "hilo de emulación",
-				    gcop, glin, tasks ? gtb * 1e3 / spukit_tick_hz() / tasks : 0.0);
+				    "hilo de emulación; %u espejos con %u líneas sin escribir porque otra color image las "
+				    "dibujó después",
+				    gcop, glin, tasks ? gtb * 1e3 / spukit_tick_hz() / tasks : 0.0, ccop, clin);
 		uint32_t zwo = rs.z_write_only - sw.rdp0.z_write_only, zcl = rs.zclears - sw.rdp0.zclears;
 		uint32_t zpend = rs.zclears_pending - sw.rdp0.zclears_pending, zmrg = rs.zclears_merged - sw.rdp0.zclears_merged;
 		uint32_t zcol = rs.z_as_color - sw.rdp0.z_as_color, zup = rs.z_uploads - sw.rdp0.z_uploads;
@@ -5354,8 +5366,8 @@ static void game_close(void)
 	salsa64_filters_release();
 	salsa64_log("cierre: emulación detenida tras %u campos (%u emulados, %u descartados por la cola, %u sin ranura)",
 		    n64.bus.vi.fields, emu_stats.fields, emu_stats.dropped, emu_stats.no_slot);
-	if (salsa64_gamefix_name(&n64.bus))
-		salsa64_log("cierre: arreglo de juego aplicado %u veces", n64.bus.gamefix_applied);
+	if (n64.bus.gamefix_on)
+		salsa64_log("cierre: arreglos de juego aplicados %u veces", n64.bus.gamefix_applied);
 	if (n64.cpu.dcache_sweep_cycles)
 		salsa64_log("cierre: %u barridos de la caché de datos", n64.cpu.dcache_sweeps);
 	savefile_close(&save_file);
@@ -5655,6 +5667,27 @@ static void font_select(int lang)
 	font_log();
 }
 
+/* Arreglos por juego en el código de la RDRAM (core/gamefix.c), elegidos al
+ * poner la ROM; los que tienen interruptor se apagan con su archivo en el
+ * directorio de datos (p. ej. dk64-musica-vieja). */
+static void gamefix_setup(void)
+{
+	for (unsigned k = 0; salsa64_gamefix_name(&n64.bus, k); k++) {
+		const char *off = salsa64_gamefix_switch(&n64.bus, k);
+		char path[128];
+		if (off) {
+			snprintf(path, sizeof path, SALSA64_DATA_DIR "/%s", off);
+			if (file_exists(path)) {
+				salsa64_gamefix_disable(&n64.bus, k);
+				salsa64_log("arreglo de juego: %s: apagado (%s)", salsa64_gamefix_name(&n64.bus, k), off);
+				continue;
+			}
+		}
+		salsa64_log("arreglo de juego: %s (se aplica cuando el juego carga ese código%s%s%s)",
+			    salsa64_gamefix_name(&n64.bus, k), off ? "; " : "", off ? off : "", off ? " lo apaga" : "");
+	}
+}
+
 /* Ritmo del RCP (rsp.c, gfx_model; docs/ritmo-rcp.md): una tarea gráfica no
  * termina antes de lo que tardaría el RSP real en ella, estimado con lo que
  * hizo la HLE. Sin eso, un juego cuya lógica avanza por cuadro dibujado y que
@@ -5721,8 +5754,10 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 	memset(rdram, 0, SALSA64_RDRAM_MAX);  /* cada juego arranca igual, venga después del que venga */
 	salsa64_n64_init(&n64, rdram, SALSA64_RDRAM_MAX);
 	n64.bus.vi.bob_full_frame = file_exists(SALSA64_DATA_DIR "/vi-campos");
-	salsa64_log("VI: cuadros entrelazados completos %s (vi-campos)",
-		    n64.bus.vi.bob_full_frame ? "por campos" : "tejidos");
+	n64.bus.vi.bob_scaled_frame = file_exists(SALSA64_DATA_DIR "/vi-escalado-campos");
+	salsa64_log("VI: cuadros entrelazados completos %s (vi-campos); escalados %s (vi-escalado-campos)",
+		    n64.bus.vi.bob_full_frame ? "por campos" : "tejidos",
+		    n64.bus.vi.bob_full_frame || n64.bus.vi.bob_scaled_frame ? "por campos" : "tejidos");
 	bool si_immediate = file_exists(SALSA64_DATA_DIR "/sin-si-diferido");
 	bool si_fixed = file_exists(SALSA64_DATA_DIR "/si-ritmo-viejo");
 	salsa64_si_set_immediate(&n64.bus, si_immediate);
@@ -5779,6 +5814,10 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 	salsa64_log("gfx: HLE Acclaim %s (sin-acclaim)", acclaim ? "activa" : "apagada");
 	bool eurocom = !file_exists(SALSA64_DATA_DIR "/sin-eurocom");
 	salsa64_log("gfx: HLE Eurocom %s (sin-eurocom)", eurocom ? "activa" : "apagada");
+	/* Conker (#68): sus variantes «F3DEX.NoN»… por el CRC del código. */
+	bool conker_text_only = file_exists(SALSA64_DATA_DIR "/conker-ucode-viejo");
+	salsa64_log("gfx: microcódigo de Conker %s (conker-ucode-viejo)",
+		    conker_text_only ? "solo por su texto (viejo)" : "por su código, con todas sus variantes");
 	bool xbus_old = file_exists(SALSA64_DATA_DIR "/texturas-xbus-viejo");
 	bool texture_wait = file_exists(SALSA64_DATA_DIR "/texturas-espera-rsx");
 	salsa64_rdp_set_texture_wait(texture_wait);
@@ -5795,12 +5834,14 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 		gfx_spu.backend.turbo3d = turbo3d;
 		gfx_spu.backend.acclaim = acclaim;
 		gfx_spu.backend.eurocom = eurocom;
+		gfx_spu.backend.conker_text_only = conker_text_only;
 		salsa64_rsp_set_gfx(&n64.bus, &gfx_spu.backend);
 	} else {
 		salsa64_gfx_sync_init(&gfx_ppe, &gfx_ppe_state, &n64.bus, &front_sink);
 		gfx_ppe.backend.turbo3d = turbo3d;
 		gfx_ppe.backend.acclaim = acclaim;
 		gfx_ppe.backend.eurocom = eurocom;
+		gfx_ppe.backend.conker_text_only = conker_text_only;
 		salsa64_rsp_set_gfx(&n64.bus, &gfx_ppe.backend);
 	}
 	/* Duración mínima de una tarea gráfica, en ciclos de la N64 (rsp.c,
@@ -5941,6 +5982,16 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 		salsa64_rdp_set_copy_alpha(copy_alpha);
 		if (!copy_alpha)
 			salsa64_log("gfx: copias a la RDRAM de los destinos con alfa sin su alfa (copia-sin-alfa)");
+	}
+	/* Los dibujos dejan en los destinos con alfa la cobertura del RDP, no el
+	 * alfa de la mezcla; `alfa-fragmento` vuelve al alfa del fragmento, como
+	 * hasta la v0.2.15 (Dr. Mario 64, #62). */
+	{
+		bool cvg_alpha = !file_exists(SALSA64_DATA_DIR "/alfa-fragmento");
+		salsa64_rdp_set_cvg_alpha(cvg_alpha);
+		if (!cvg_alpha)
+			salsa64_log("gfx: los destinos con alfa guardan el alfa del fragmento, como la v0.2.15 "
+				    "(alfa-fragmento)");
 	}
 	/* Las imágenes chicas de 32 bits (la luz de los cuartos oscuros de Paper
 	 * Mario) las dibuja el PPE en la RDRAM; `gfx-mascara32-rsx` las deja en
@@ -6092,8 +6143,7 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 		    scale_policy.current, scale_policy.maximum, scale_auto_ceiling(&scale_policy));
 	rdp_scale_set(scale_wanted(), scale_capped() ? "al abrir el juego, tope de 3× con un CRT" : "al abrir el juego");
 	load_cheats(source);
-	if (salsa64_gamefix_name(&n64.bus))
-		salsa64_log("arreglo de juego: %s (se aplica cuando el juego carga ese código)", salsa64_gamefix_name(&n64.bus));
+	gamefix_setup();
 	ra_game_open(rom, rom_size, rdram, SALSA64_RDRAM_MAX);  /* RetroAchievements, si está activado y hay sesión */
 	if (selftest_on)
 		selftest_start();
@@ -6164,6 +6214,14 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 				salsa64_log("guarda de las copias contra el CPU: %s; vigilante %s0x%06x–0x%06x",
 					    guard_on ? "encendida" : "apagada (sin-guarda-cpu)", whi ? "en " : "apagado ",
 					    wlo, whi);
+			/* El espejo del framebuffer no escribe las líneas que otra color
+			 * image dibujó después (salsa64_rdp_claims; FIFA 99 al acabar el
+			 * partido): `espejo-pisa-otras` vuelve a como antes. */
+			bool claims_on = !file_exists(SALSA64_DATA_DIR "/espejo-pisa-otras");
+			salsa64_rdp_claims(claims_on);
+			salsa64_log("gfx: el espejo del framebuffer %s",
+				    claims_on ? "no pisa lo que otra color image dibujó después (espejo-pisa-otras)"
+					      : "pisa lo que otra color image dibujó después, como antes (espejo-pisa-otras)");
 		}
 		/* Alfa en los destinos de render a textura (salsa64_rdp_target_alpha):
 		 * `sin-alfa-destinos` vuelve a los destinos X8R8G8B8 de antes. */
@@ -7822,6 +7880,18 @@ int main(int argc, char **argv)
 			    vb->used_current ? "videoConfigure con los valores vigentes del XMB"
 					     : "videoConfigure normal (otro modo que el vigente)",
 			    vb->tiles_active, vb->tiles_active ? ": " : "", vb->tiles);
+	}
+	{
+		/* El alfa que dejan los dibujos en un destino con alfa (rsxkit_draw.dst_alpha,
+		 * docs/framebuffer.md): lo que se lee de vuelta contra lo esperado. */
+		uint8_t a[RSXKIT_DSTA_TEST_N];
+		int st = rsxkit_dsta_selftest(a);
+		const uint8_t *e = rsxkit_dsta_expected;
+		bool ok = st == RSXKIT_OK && !memcmp(a, e, sizeof a);
+		salsa64_log("rsxkit: autoprueba dst_alpha ONE=%02x ONE+mezcla=%02x ONE+prueba=%02x ONE+descarte=%02x "
+			    "FRAG=%02x KEEP=%02x MAX=%02x/%02x (esperado %02x %02x %02x %02x %02x %02x %02x/%02x): %s",
+			    a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7],
+			    st != RSXKIT_OK ? "no se pudo" : ok ? "bien" : "MAL");
 	}
 	if (file_exists(SALSA64_DATA_DIR "/filtros-autoprueba")) {
 		bool ok = salsa64_filters_selftest();

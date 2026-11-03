@@ -429,6 +429,20 @@ static inline float gfx_prim_z(const struct gfx_vertex *v, uint32_t n)
 enum { GFX_CULL_NONE = 0, GFX_CULL_FRONT = 1, GFX_CULL_BACK = 2 };
 enum { GFX_ATEST_NONE = 0, GFX_ATEST_GEQUAL = 1 };
 
+/* gfx_draw.cvg_bit: el bit de alfa que el RDP deja en una color image de 16
+ * bits (RGBA5551) en los píxeles que escribe. No es el alfa de la mezcla: en
+ * los ciclos 1 y 2 es la cobertura (rdp.c, cvg_bit); en FILL, el bit del
+ * color de relleno, y en COPY, el del texel. Con un píxel cubierto entero
+ * (el RSX no tiene cobertura parcial):
+ *  - GFX_CVG_ONE: queda en 1 (CVG_DST_CLAMP y ZAP, y WRAP y SAVE sin IM_RD);
+ *  - GFX_CVG_KEEP: el de la memoria no cambia (WRAP y SAVE con IM_RD);
+ *  - GFX_CVG_ALPHA: el alfa del fragmento decide (FILL, COPY, y CLAMP con
+ *    CVG_X_ALPHA, donde la cobertura es cvg·α);
+ *  - GFX_CVG_MAX: 1 si ya lo era o si el alfa del fragmento llega a la mitad
+ *    (CLAMP con CVG_X_ALPHA, FORCE_BL e IM_RD: cvg·α + la de la memoria).
+ * docs/framebuffer.md, «El bit de alfa es la cobertura». */
+enum { GFX_CVG_ONE = 0, GFX_CVG_KEEP = 1, GFX_CVG_ALPHA = 2, GFX_CVG_MAX = 3 };
+
 struct gfx_draw {
 	struct gfx_cmd h;        /* a = primer vértice, b = número de vértices */
 	uint32_t zimg;           /* z image en uso (dirección física) */
@@ -443,7 +457,9 @@ struct gfx_draw {
 	uint8_t ntex;            /* texturas usadas: 0, 1 o 2 */
 	uint32_t fog_color;      /* 0xRRGGBBAA */
 	uint32_t prim_kind;      /* informativo: 0 triángulos, 1 rectángulos, 2 relleno */
-	uint32_t prim_tile;      /* informativo: tile de los rectángulos */
+	uint16_t prim_tile;      /* informativo: tile de los rectángulos */
+	uint8_t cvg_bit;         /* GFX_CVG_*: el bit de alfa que deja en una imagen de 16 bits */
+	uint8_t pad_cvg;
 	uint8_t nterms;          /* 0: combinación lineal fija; si no, términos con `factors` */
 	uint8_t factors[GFX_K_TERMS][GFX_K_FACTORS];  /* GFX_F_*, 0 = fin de la lista */
 	/* G_RM_VISCVG: el RDP escribe la cobertura de cada píxel como color

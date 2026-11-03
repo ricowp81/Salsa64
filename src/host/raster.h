@@ -30,6 +30,10 @@ void raster_rdram_written(uint32_t pa, uint32_t len, uint32_t task);
 /* Dibujos con triángulos dibujados, cuántos son para la pasada de aristas
  * (opacos con AA_EN; la llevan si raster_aa_edges) y sus triángulos. */
 void raster_edge_stats(uint32_t *draws, uint32_t *with_edges, uint32_t *tris);
+/* Dibujos de los ciclos 1 y 2 en un destino con alfa por el bit que dejan
+ * (gfx_draw.cvg_bit, GFX_CVG_*), y copias a la RDRAM de imágenes de 16 bits
+ * de otro ancho que el VI que no caben en un espejo (como la PS3). */
+void raster_alpha_stats(uint32_t cvg[4], uint32_t *big);
 /* Dibujos en color images de 8 bits y texturas I8 leídas de ellas: de su
  * imagen (render a textura) o, si no se pudo, de la RDRAM. */
 void raster_8bit_stats(uint32_t *draws, uint32_t *tex_rsx, uint32_t *tex_rdram);
@@ -44,6 +48,12 @@ const uint32_t *raster_image(uint32_t addr, uint32_t *width);
  * de accesos del CPU); false si está vacía. */
 /* La imagen de la ranura `slot` (RASTER_W de paso), o NULL si está vacía. */
 const uint32_t *raster_slot_image(int slot);
+/* ¿La imagen que contiene `addr` lleva el bit de alfa (el byte alto en
+ * 0xFF: alfa 0)? Las de 16 bits que no son del ancho del VI, o todas las
+ * de 16 bits con raster_alpha_all (diagnóstico: salsa64-run --ares compara
+ * el bit con el de la consola). */
+bool raster_image_alpha(uint32_t addr);
+extern bool raster_alpha_all;
 bool raster_target_info(int slot, uint32_t *addr, uint32_t *width, uint32_t *bpp, uint32_t *lh);
 
 /* Ajustes (los pone run.c): trazar a stderr los dibujos que leen un destino
@@ -69,8 +79,11 @@ extern bool raster_affine;
 /* Como la PS3: alfa en los destinos de render a textura de 16 bits que no
  * son del ancho del VI (salsa64_rdp_target_alpha; SALSA64_SIN_ALFA_DESTINOS=1
  * lo apaga) y su bit en las copias a la RDRAM (salsa64_rdp_set_copy_alpha;
- * SALSA64_COPIA_SIN_ALFA=1 vuelve a copiar con alfa 1). */
-extern bool raster_target_alpha, raster_copy_alpha;
+ * SALSA64_COPIA_SIN_ALFA=1 vuelve a copiar con alfa 1); los dibujos de los
+ * ciclos 1 y 2 dejan su cobertura (gfx_draw.cvg_bit, salsa64_rdp_set_cvg_alpha;
+ * SALSA64_ALFA_FRAGMENTO=1 deja el alfa del fragmento, como la PS3 hasta la
+ * v0.2.15). */
+extern bool raster_target_alpha, raster_copy_alpha, raster_cvg_alpha;
 /* Como el blindaje del RSX de la PS3 (rsx-sin-blindaje lo apaga): una color
  * image que empieza fuera de la RDRAM no tiene destino (rdp_cimg_impossible).
  * SALSA64_RSX_SIN_BLINDAJE=1 lo apaga. */
@@ -80,6 +93,10 @@ extern float raster_edge_factor, raster_edge_units;  /* su desplazamiento hacia 
 /* Cada campo con imagen: el origen y ancho del VI (como salsa64_rdp_vi). */
 struct salsa64_vi_frame;
 void raster_vi(const struct salsa64_vi_frame *f);
+/* Lo que eligió la última presentación (rdp_targets_present, como la PS3):
+ * el destino (dirección y ancho), la fila desde la que se presenta y cuántas.
+ * false si no se presentó nada. Para --trace-vi. */
+bool raster_last_present(uint32_t *addr, uint32_t *width, uint32_t *y0, uint32_t *h);
 /* Vuelve al estado del arranque: tabla de destinos, imágenes y cuentas
  * (pruebas unitarias; salsa64-run no lo necesita). */
 void raster_reset(void);

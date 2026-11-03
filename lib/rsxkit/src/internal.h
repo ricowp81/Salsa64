@@ -100,6 +100,9 @@ void rsxkit_fb_shutdown(void);
 void rsxkit_leave_3d(void);
 /* Escribe la etiqueta de uso del programa 3D con dibujos pendientes. */
 void rsxkit_3d_flush_use(void);
+/* Olvida el arreglo de vértices de rsxkit_vertices (se liberó su memoria):
+ * hasta el próximo rsxkit_vertices no se dibuja. */
+void rsxkit_3d_forget_vertices(void);
 /* Olvida todo el estado del RSX que rsxkit da por puesto (arreglos de
  * vértices, programas, estado fijo y constantes del 3D, superficie): el
  * próximo dibujo lo manda de nuevo. Después de cada flip (frame_end). */

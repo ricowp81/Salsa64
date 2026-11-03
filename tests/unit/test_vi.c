@@ -248,17 +248,80 @@ static void full_interlaced_frame(void)
 	CHECK_EQ(f.vpos, 0x26);
 	CHECK_EQ(f.height, 237);
 	CHECK_EQ(f.stride, 2560);
-	/* Rogue usa 316 líneas; tampoco es un cuadro completo. */
+	/* Rogue usa 316 líneas de un búfer de 335: un cuadro completo escalado
+	 * (#69); con vi-escalado-campos, por campos como antes. */
 	vi_wr(SALSA64_VI_WIDTH, 640);
 	vi_wr(SALSA64_VI_Y_SCALE, 0x555);
 	CHECK(salsa64_vi_frame(bus(), &f));
+	CHECK(f.weave);
+	CHECK_EQ(f.vpos, 0x25);
+	CHECK_EQ(f.height, 316);
+	bus()->vi.bob_scaled_frame = true;
+	CHECK(salsa64_vi_frame(bus(), &f));
 	CHECK(!f.weave);
 	CHECK_EQ(f.vpos, 0x26);
+	bus()->vi.bob_scaled_frame = false;
 	vi_wr(SALSA64_VI_CONTROL, 0x3202);
 	vi_wr(SALSA64_VI_Y_SCALE, 0x800);
 	CHECK(salsa64_vi_frame(bus(), &f));
 	CHECK(!f.weave);
 	CHECK_EQ(f.vpos, 0);
+}
+
+/* FIFA 99 (#69): 512 × 384 a Y_SCALE 1,6 (menús) y 480 × 360 a 1,5
+ * (partido), los registros que deja el juego (los mismos en ares). En los
+ * campos impares el origen está en la fila 1 y V_VIDEO empieza en 0x23; en
+ * los pares, en la fila 2 y en 0x25. Es un cuadro completo: vpos sin el bit
+ * de campo, como Indiana Jones; los de 240 renglones (Y_SCALE 1,0) no. */
+static void scaled_interlaced_frame(void)
+{
+	static const struct { uint32_t width, x_scale, y_scale, base, height; } m[2] = {
+		{ 512, 0x333, 0x02000666, 0x157640, 379 },
+		{ 480, 0x300, 0x02000600, 0x1abcc0, 356 },
+	};
+	struct salsa64_vi_frame f;
+	for (unsigned i = 0; i < 2; i++) {
+		for (uint32_t field = 0; field < 2; field++) {
+			set_mode(0x13056, m[i].base + m[i].width * 2 * (2 - field), m[i].width);
+			vi_wr(SALSA64_VI_X_SCALE, m[i].x_scale);
+			vi_wr(SALSA64_VI_Y_SCALE, m[i].y_scale);
+			vi_wr(SALSA64_VI_V_VIDEO, field ? 0x002301FD : 0x002501FF);
+			bus()->vi.field = field;
+			CHECK(salsa64_vi_frame(bus(), &f));
+			CHECK_EQ(f.width, m[i].width);
+			CHECK_EQ(f.height, m[i].height);
+			CHECK_EQ(f.stride, m[i].width * 2);
+			CHECK(f.weave);
+			CHECK_EQ(f.vpos, field ? 0x23 : 0x25);
+			/* vi-escalado-campos: por campos, con el bit de campo. */
+			bus()->vi.bob_scaled_frame = true;
+			CHECK(salsa64_vi_frame(bus(), &f));
+			CHECK(!f.weave);
+			CHECK_EQ(f.vpos, field ? 0x24 : 0x25);
+			bus()->vi.bob_scaled_frame = false;
+			/* vi-campos apaga los dos. */
+			bus()->vi.bob_full_frame = true;
+			CHECK(salsa64_vi_frame(bus(), &f));
+			CHECK(!f.weave);
+			bus()->vi.bob_full_frame = false;
+		}
+	}
+	/* 240 renglones con SERRATE (Y_SCALE 1,0) y sin SERRATE: igual que antes. */
+	set_mode(0x13056, 0x100000, 320);
+	CHECK(salsa64_vi_frame(bus(), &f));
+	CHECK(!f.weave);
+	set_mode(0x13016, 0x100000, 480);
+	vi_wr(SALSA64_VI_X_SCALE, 0x300);
+	vi_wr(SALSA64_VI_Y_SCALE, 0x02000600);
+	CHECK(salsa64_vi_frame(bus(), &f));
+	CHECK(!f.weave);
+	CHECK_EQ(f.vpos, 0);
+	/* Más de dos filas por renglón no es un cuadro: tampoco. */
+	set_mode(0x13056, 0x100000, 480);
+	vi_wr(SALSA64_VI_Y_SCALE, 0xA00);
+	CHECK(salsa64_vi_frame(bus(), &f));
+	CHECK(!f.weave);
+	bus()->vi.field = 0;
 }
 
 void t_suite_vi(void)
@@ -272,4 +335,5 @@ void t_suite_vi(void)
 	RUN(vi_interrupt_reaches_cpu);
 	RUN(frame_description);
 	RUN(full_interlaced_frame);
+	RUN(scaled_interlaced_frame);
 }

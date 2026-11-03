@@ -93,7 +93,8 @@ struct salsa64_bus {
 	uint8_t si_pending;    /* 1: PIF→RDRAM; 2: RDRAM→PIF; 0: libre */
 	uint8_t si_immediate;  /* comparación: volver al SI sin latencia anterior */
 	uint8_t si_fixed;      /* comparación: las dos operaciones con el ritmo fijo de 2 ms */
-	uint8_t gamefix;       /* arreglo por juego de la ROM (gamefix.c): índice + 1, 0 si no hay */
+	uint32_t gamefix_sel;  /* arreglos por juego de la ROM (gamefix.c): bit i = fixes[i] */
+	uint32_t gamefix_on;   /* los elegidos que no apagó un interruptor */
 	uint32_t gamefix_applied;  /* veces que se aplicó (el juego volvió a cargar el código original) */
 	uint32_t rdram_regs[SALSA64_RDRAM_NREGS];
 	struct salsa64_pif pif;

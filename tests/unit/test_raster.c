@@ -852,6 +852,113 @@ static void raster_alpha_copy(void)
 	raster_fbfx = fbfx;
 }
 
+/* Un dibujo de la imagen de 32 × 32: su ciclo, su cobertura
+ * (gfx_draw.cvg_bit), su mezcla y su alfa (el del combiner; en un relleno,
+ * el bit del color). */
+struct aux_draw {
+	uint8_t cycle, cvg, blend;
+	float alpha;
+};
+
+/* El fondo (toda la imagen) y encima un recuadro de 8 a 24, rojo. */
+static void task_aux_two(const struct aux_draw *bg, const struct aux_draw *over)
+{
+	memset(cmd2, 0, sizeof cmd2);
+	struct gfx_cmd *t = (struct gfx_cmd *)cmd2;
+	t->op = GFX_OP_TARGET;
+	t->size = sizeof *t;
+	t->a = AUX;
+	t->b = 32;
+	t->c = 2;
+	const struct aux_draw *a[2] = { bg, over };
+	for (int k = 0; k < 2; k++) {
+		struct gfx_draw *d = (struct gfx_draw *)(cmd2 + sizeof *t + k * sizeof *d);
+		d->h.op = GFX_OP_DRAW;
+		d->h.size = sizeof *d;
+		d->h.a = (uint32_t)(6 * k);
+		d->h.b = 6;
+		d->scissor[2] = 32 * 4;
+		d->scissor[3] = 32 * 4;
+		d->cycle = a[k]->cycle;
+		d->cvg_bit = a[k]->cvg;
+		d->blend = a[k]->blend;
+		d->k[GFX_K_ONE][0][0] = k ? 1.0f : 0.0f;
+		d->k[GFX_K_ONE][0][2] = k ? 0.0f : 1.0f;
+		d->k[GFX_K_ONE][0][3] = a[k]->alpha;
+		if (d->cycle == 3)
+			d->aref = a[k]->alpha >= 0.5f ? 255 : 0;
+	}
+	quad(&vtx2[0], 0, 0, 32, 32);
+	quad(&vtx2[6], 8, 8, 24, 24);
+	struct gfx_job job;
+	struct gfx_result res;
+	memset(&job, 0, sizeof job);
+	memset(&res, 0, sizeof res);
+	job.rdram_ea = (uint64_t)(uintptr_t)ram;
+	job.rdram_size = sizeof ram;
+	job.vtx_ea = (uint64_t)(uintptr_t)vtx2;
+	job.cmd_ea = (uint64_t)(uintptr_t)cmd2;
+	res.cmd_bytes = sizeof cmd2;
+	raster_task(&job, &res);
+}
+
+/* El bit de alfa que llega a la RDRAM es el del RDP según el modo de cada
+ * dibujo (gfx_draw.cvg_bit), no el alfa de la mezcla: Dr. Mario 64 (#62)
+ * dibuja los paneles translúcidos de su fondo con alfa 0,375 en ZAP y la
+ * consola deja 1; con el alfa del fragmento (alfa-fragmento, la v0.2.15)
+ * quedaban en 0 y el juego los pegaba transparentes. El fondo del recuadro
+ * comprueba que un dibujo no toca el bit fuera de lo que cubre. */
+static void raster_alpha_cvg(void)
+{
+	enum { FILL = 3, COPY = 2, C1 = 0 };
+	const struct aux_draw clear0 = { FILL, GFX_CVG_ALPHA, GFX_BLEND_OFF, 0.0f };  /* relleno 0x0000 */
+	const struct aux_draw opaque = { C1, GFX_CVG_ONE, GFX_BLEND_OFF, 1.0f };      /* fondo dibujado */
+	static const struct {
+		bool fill_bg;
+		struct aux_draw over;
+		bool cvg_on;
+		uint16_t inside, outside;  /* bit de alfa en (16, 16) y en (2, 2) */
+	} c[] = {
+		/* ZAP o CLAMP: 1 aunque el alfa sea 0,375; con alfa-fragmento, 0. */
+		{ true, { C1, GFX_CVG_ONE, GFX_BLEND_ALPHA, 0.375f }, true, 1, 0 },
+		{ true, { C1, GFX_CVG_ONE, GFX_BLEND_ALPHA, 0.375f }, false, 0, 0 },
+		{ true, { C1, GFX_CVG_ONE, GFX_BLEND_OFF, 0.0f }, true, 1, 0 },
+		/* WRAP o SAVE con IM_RD: el de la memoria. */
+		{ true, { C1, GFX_CVG_KEEP, GFX_BLEND_ALPHA, 1.0f }, true, 0, 0 },
+		{ false, { C1, GFX_CVG_KEEP, GFX_BLEND_ALPHA, 0.375f }, true, 1, 1 },
+		/* CVG_X_ALPHA sin FORCE_BL: el alfa. */
+		{ true, { C1, GFX_CVG_ALPHA, GFX_BLEND_OFF, 0.375f }, true, 0, 0 },
+		{ true, { C1, GFX_CVG_ALPHA, GFX_BLEND_OFF, 0.75f }, true, 1, 0 },
+		/* CVG_X_ALPHA con FORCE_BL e IM_RD: 1 si ya lo era o con alfa ≥ 1/2. */
+		{ true, { C1, GFX_CVG_MAX, GFX_BLEND_ALPHA, 0.375f }, true, 0, 0 },
+		{ true, { C1, GFX_CVG_MAX, GFX_BLEND_ALPHA, 0.75f }, true, 1, 0 },
+		{ false, { C1, GFX_CVG_MAX, GFX_BLEND_ALPHA, 0.375f }, true, 1, 1 },
+		/* Una copia deja el bit del texel (aquí, el alfa del combiner). */
+		{ false, { COPY, GFX_CVG_ALPHA, GFX_BLEND_OFF, 0.0f }, true, 0, 1 },
+	};
+	int fbfx = raster_fbfx;
+	bool ta = raster_target_alpha, ca = raster_copy_alpha, cv = raster_cvg_alpha;
+	raster_fbfx = 2;
+	raster_target_alpha = raster_copy_alpha = true;
+	for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
+		raster_reset();
+		memset(ram, 0x55, sizeof ram);
+		raster_cvg_alpha = c[i].cvg_on;
+		task_fill(FB_A, 0, 0, 255);
+		field(FB_A);
+		task_aux_two(c[i].fill_bg ? &clear0 : &opaque, &c[i].over);
+		t_checks++;
+		if ((aux_px(16, 16) & 1u) != c[i].inside || (aux_px(2, 2) & 1u) != c[i].outside)
+			t_fail(__FILE__, __LINE__, "caso %u: bit de alfa %u dentro y %u fuera, se esperaba %u y %u", i,
+			       aux_px(16, 16) & 1u, aux_px(2, 2) & 1u, c[i].inside, c[i].outside);
+	}
+	raster_reset();
+	raster_target_alpha = ta;
+	raster_copy_alpha = ca;
+	raster_cvg_alpha = cv;
+	raster_fbfx = fbfx;
+}
+
 /* layer8 (src/rdp/layer8.c, lo que el PPE hace en la PS3 con las capas de
  * 8 bits) contra el rasterizador del host, byte a byte: tiles CI8 de 16 ×
  * 16 (RGBA8888 con el índice en el rojo) copiados 1:1 sin filtro, un
@@ -1290,6 +1397,7 @@ void t_suite_raster(void)
 	RUN(raster_layer8_cost);
 	RUN(raster_big8_primed);
 	RUN(raster_alpha_copy);
+	RUN(raster_alpha_cvg);
 	RUN(raster_recycled_slot);
 	RUN(raster_recycled_slot_big);
 	RUN(raster_copy_inside_scissor);

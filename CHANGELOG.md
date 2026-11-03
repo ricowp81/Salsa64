@@ -6,6 +6,91 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
 
 ## [Unreleased]
 
+## [0.2.16] — 2026-11-02
+
+### Fixed
+- **Conker's Bad Fur Day: after the elevator at the end of Heist the cutscene
+  was garbled and the game then showed a black screen with a few lines** (#68).
+  Conker ships one graphics microcode with eight data segments ("F3DEX",
+  "F3DEXBS", "F3DEXBG" and "F3DEXBGBS", with and without ".NoN") and switches
+  to "F3DEX.NoN" from that elevator on. The emulator recognised Conker's
+  microcode by its "F3DEXBG" name only, so that part of the game ran as plain
+  F3DEX2, which has no four-triangle command: almost nothing was drawn. Conker's
+  microcode is now recognised by its code, so every variant uses Conker's
+  graphics path. The file `conker-ucode-viejo` in `/dev_hdd0/salsa64/` restores
+  the old name-only detection.
+
+- **FIFA 99: the picture shook up and down in the menus and during matches**
+  (#69). The game shows interlaced 512 × 384 and 480 × 360 frames scaled to the
+  full screen, starting each field one line lower and alternating between two
+  buffers. Each field was shown on its own, so the image moved one line every
+  field. These scaled full frames are now woven like the 640 × 480 ones of
+  Indiana Jones. Resident Evil 2 and Rogue Squadron use the same kind of mode
+  and should stop shaking too. The file `vi-escalado-campos` in
+  `/dev_hdd0/salsa64/` restores the field-by-field presentation.
+- **FIFA 99: the screen stayed black after a match when choosing Continue**
+  (#69). When the game switches from the 512 × 384 menu framebuffers to the
+  480 × 360 match framebuffers it frees the old ones and allocates new heap
+  blocks in the same memory. The PS3 copies each displayed frame back to the
+  emulated RAM a little later than the N64 would have written it, and the copy
+  of the last menu frame landed after the first match frame: it overwrote the
+  header of a heap block with black pixels. Nothing noticed until the match
+  ended and the game freed that block, which crashed the game thread. The copy
+  of a frame no longer writes lines that a different, newer color image drew
+  in the meantime. Saved states made during an affected match already carry
+  the broken header: start a new match. The file `espejo-pisa-otras` in
+  `/dev_hdd0/salsa64/` restores the old behaviour.
+
+- **Conker's Bad Fur Day: models flickered in and out during the fight in the
+  vault** (#68). The starfield seen through the airlock is drawn one star at a
+  time, and with the ship and the models a frame needed up to ~2900 draws; the
+  graphics output buffer held 2642, so the rest of the frame was dropped. The
+  buffer now holds 3170 draws; the extra space comes from the texture staging
+  area, so overall memory use does not change.
+- **Conker's Bad Fur Day (USA): the Great Mighty Poo did not open his mouth and
+  Sweet Melody got stuck when entered straight from the Chapters menu** (#3).
+  The game's music manager starts a song by sending PLAY to the sequence
+  player and, on every game frame, treats a stopped player as a finished song
+  and drops its record. With the emulated CPU (faster than the real one) the
+  next game frame could arrive before the audio thread had processed the PLAY:
+  the record of the cave song was dropped, the song played without it, and the
+  markers that drive the Poo's mouth and the scene were lost. The emulator now
+  patches the game's PLAY routine in RAM, only when the original code is there,
+  so it waits for the audio thread to start the player (as the game already
+  does when it stops one). Only the USA retail ROM is affected; the file
+  `conker-musica-vieja` in `/dev_hdd0/salsa64/` turns the patch off.
+- **Donkey Kong 64 (USA): the DK Rap intro had no music, and it came in about
+  1.5 minutes late and out of sync with the lyrics** (#51). The game's music
+  manager starts a song and, on the next game frame, expects the audio thread
+  to have processed the PLAY; if the player is still stopped it stops it,
+  reloads the song from the ROM and sends PLAY again. With the emulated CPU
+  (faster than the real one) the switch to the rap scene fits a one-retrace
+  frame, the main thread ends up on the opposite field phase and every reload
+  lands just before the audio thread's frame: the song was reloaded 30 times
+  per second for ~96 s and never played (on ares the song loads once and plays
+  on the next frame). The emulator now patches that manager in RAM, only when
+  the original code is there, so a song whose PLAY is pending waits for the
+  player instead of being reloaded. Only the USA retail ROM is affected; the
+  file `dk64-musica-vieja` in `/dev_hdd0/salsa64/` turns the patch off.
+- **Dr. Mario 64: white panels in the game background (#62, regression of
+  0.2.15).** In a 16-bit color image the RDP stores the pixel coverage in the
+  RGBA5551 alpha bit, not the blender alpha: 1 for almost every mode (CLAMP and
+  ZAP), the old bit for WRAP/SAVE with image read, the texel bit in COPY and the
+  fill color bit in FILL. The RSX render-to-texture targets kept the fragment
+  alpha instead (rsxkit's "alpha 1" blend mode actually copied it), and since
+  0.2.15 that alpha reaches RDRAM copies: Dr. Mario 64 draws its translucent
+  panels into a 328 × 240 background image with alpha 0.375 and pastes it with
+  an alpha test every frame, so the score box, the bottle interior, Dr. Mario's
+  box and the level/speed boxes came out white (with the falling pill's trail
+  inside the bottle). The targets now get the RDP's bit (checked against ares:
+  identical bits in the whole image). The RSX blender cannot output a constant
+  alpha, so rsxkit writes alpha 1 with an extra alpha-only pass (same program,
+  depth test and alpha test) when the fragment alpha is not already 1; a boot
+  self-test logs what each `dst_alpha` mode leaves on the real RSX
+  (`rsxkit: autoprueba dst_alpha …`). The flag file `alfa-fragmento` in
+  `/dev_hdd0/salsa64/` restores the 0.2.15 behaviour; `copia-sin-alfa` still
+  works as before.
+
 ## [0.2.15] — 2026-10-29
 
 ### Changed

@@ -91,12 +91,20 @@ struct salsa64_rdp_stats {
 	 * tomar las huellas al terminar cada tarea (hilo de emulación). */
 	uint32_t guard_lines, guard_copies;
 	uint64_t tb_guard_mark;  /* ticks del timebase */
+	/* Líneas que el espejo del framebuffer no escribió porque otra color
+	 * image las dibujó en una tarea posterior (rdp_claim_ring, targets.h),
+	 * y espejos con alguna así. */
+	uint32_t claim_lines, claim_copies;
 	uint32_t tall_fills;                /* rellenos de una color image más alta que 480 repartidos a sus destinos */
 	uint32_t tex_rsx, tex_rdram, tex_self, primes, prime_waits;
 	/* Alfa en los destinos (salsa64_rdp_target_alpha): destinos creados con
 	 * canal alfa, texturas leídas de uno de ellos, y rellenos / copias de
 	 * texturas que escribieron su alfa tal cual (rsxkit_draw.dst_alpha). */
 	uint32_t targets_alpha, tex_alpha, alpha_fills;
+	/* Dibujos de los ciclos 1 y 2 en un destino con alfa por el bit que
+	 * dejan (gfx_draw.cvg_bit, GFX_CVG_*: 1, el de la memoria, el del alfa,
+	 * el mayor); salsa64_rdp_set_cvg_alpha. */
+	uint32_t alpha_cvg[4];
 	/* Copias a la RDRAM de un destino con alfa que llevaron su alfa al bit
 	 * de RGBA5551 (salsa64_rdp_set_copy_alpha). */
 	uint32_t alpha_copies;
@@ -241,6 +249,11 @@ void salsa64_rdp_set_big8_prime(bool prime);
  * RDP; `false` (bandera copia-sin-alfa) vuelve a copiarlas en RGB565 con
  * alfa 1 (LEGO Racers, #34: autos lejanos dentro de un cuadro). */
 void salsa64_rdp_set_copy_alpha(bool on);
+/* Los dibujos de los ciclos 1 y 2 dejan en un destino con alfa la cobertura
+ * del RDP (gfx_draw.cvg_bit: casi siempre 1), no el alfa de la mezcla;
+ * `false` (bandera alfa-fragmento) vuelve al alfa del fragmento, como hasta
+ * la v0.2.15 (Dr. Mario 64, #62: paneles del fondo en blanco). */
+void salsa64_rdp_set_cvg_alpha(bool on);
 /* Las capas de 8 bits (big8) las dibuja el PPE en la RDRAM (layer8.h) y no
  * pasan por el RSX ni por su copia; `false` (bandera gfx-capas8-rsx) vuelve
  * a dibujarlas en el RSX y a esperar la copia. */
@@ -316,6 +329,11 @@ void salsa64_rdp_target_alpha(bool on);
  * del CPU (copias del RSX, VISCVG, DMA) en la RDRAM [watch_lo, watch_hi), y
  * si dejó la palabra 0x00010001. Fuera del bucle. */
 void salsa64_rdp_guard(bool on, uint32_t watch_lo, uint32_t watch_hi);
+/* El espejo del framebuffer no escribe las líneas que otra color image
+ * dibujó en una tarea posterior a la suya (rdp_claim_ring, targets.h; FIFA 99
+ * al acabar el partido): encendido por omisión; `on` false vuelve a como
+ * antes (solo la guarda). Fuera del bucle. */
+void salsa64_rdp_claims(bool on);
 /* Hilo de emulación: un DMA escribió la RDRAM [pa, pa + len); con
  * `gfx_in_flight`, mientras corría una tarea gráfica. Las copias de esa
  * tarea y de las anteriores no pisan ese tramo (targets.h, rdp_dma_ring). */
