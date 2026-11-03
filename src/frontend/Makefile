@@ -16,7 +16,7 @@ PROGRAM := salsa64-perfil
 TITLE   := Salsa64 perfil
 APPID   := SLSA00120
 endif
-SRCS    := main.c audio_out.c audio_sync.c menu.c osd.c osd_fps.c pacer.c padmap.c pausectl.c scale_auto.c replay.c romlist.c ziprom.c savefile.c mempakfile.c transferpakfile.c \
+SRCS    := main.c audio_out.c audio_sync.c menu.c osd.c osd_fps.c pacer.c padmap.c pausectl.c scale_auto.c replay.c romlist.c ziprom.c sevenziprom.c savefile.c mempakfile.c transferpakfile.c \
            cheats.c cuelgue.c intro.c intro_logic.c cover.c download.c dlutil.c netstack.c ra.c ra_core.c ra_rules.c i18n.c namematch.c screenshot.c selftest.c selftest_audio.c selftest_gfx.c states.c cajanegra.c \
            version.c perfilado.c perfilado_ps3.c filters/crt_params.c filters/filters.c seda.c seda_calc.c cartucho3d.c cartucho_mesh.c thumbs.c thumbs_calc.c prompts.c
 # Filtros de la presentación (filters/): fragment programs en Cg compilados
@@ -32,7 +32,13 @@ RC_TOP  := $(R)
 include $(R)/mk/rcheevos.mk
 ICON0   := $(R)/assets/ps3/ICON0.PNG
 PIC1    := $(R)/assets/ps3/PIC1.PNG
-COMMON  := $(RC_FILES) src/platform/ps3/log.c src/platform/ps3/rec_cache.c src/platform/ps3/fastmem.c src/platform/ps3/gfx_spu.c \
+# Lector 7z: subconjunto C oficial del LZMA SDK 26.05 (dominio público).
+ARCHIVE_C_DIR := $(R)/third_party/7zip-lzma-sdk/C
+ARCHIVE_C_SRCS := $(addprefix third_party/7zip-lzma-sdk/C/, \
+                   7zAlloc.c 7zArcIn.c 7zBuf.c 7zBuf2.c 7zCrc.c 7zCrcOpt.c \
+                   7zDec.c 7zFile.c 7zStream.c Bcj2.c Bra.c Bra86.c BraIA64.c \
+                   CpuArch.c Delta.c Lzma2Dec.c LzmaDec.c Ppmd7.c Ppmd7Dec.c)
+COMMON  := $(RC_FILES) $(ARCHIVE_C_SRCS) src/platform/ps3/log.c src/platform/ps3/rec_cache.c src/platform/ps3/fastmem.c src/platform/ps3/gfx_spu.c \
            src/platform/ps3/audio_spu.c src/platform/ps3/jpeg_spu.c src/platform/ps3/rsp_spu.c src/platform/ps3/bgjob.c src/platform/ps3/bgio.c src/rdp/rdp.c src/rdp/layer8.c src/rdp/mask32.c src/rdp/targets.c src/rdp/vmatch.c src/rdp/gfxdump.c src/rdp/blackbox.c \
            $(patsubst $(R)/%,%,$(wildcard $(R)/src/core/*.c $(R)/src/cpu/*.c $(R)/src/rsp/gfx/*.c $(R)/src/rsp/audio/*.c $(R)/src/rsp/jpeg/*.c \
                                           $(R)/src/rsp/lle/*.c))
@@ -103,12 +109,17 @@ gfx3_STACK_ARGS := --edge gfx_dl_f3d:f5_command $(GFX_STACK_LIBC)
 gfx4_STACK_ARGS := $(GFX_STACK_LIBC)
 gfx5_STACK_ARGS := --ignore gfx_dl_f3d --edge gfx_dl_f3dex2:acclaim_command $(GFX_STACK_LIBC)
 ZLIB_PREFIX ?= $(PS3DEV)/portlibs/ppu
-CFLAGS  := -I$(ZLIB_PREFIX)/include -ffp-contract=off -fno-math-errno $(RC_DEFS) $(RC_INC)
-LIBS    := -lrsx -lgcm_sys -laudio -lio -lfontFT -lfont -lsysutil -lhttp -lhttputil -lssl -lnetctl -lnet -lsysmodule -lrt -llv2 -lm -lz
+CFLAGS  := -I$(ZLIB_PREFIX)/include -I$(ARCHIVE_C_DIR) -DZ7_PPMD_SUPPORT -DZ7_EXTRACT_ONLY -ffp-contract=off -fno-math-errno $(RC_DEFS) $(RC_INC)
+LIBS    := -lrsx -lgcm_sys -laudio -lio -lfontFT -lfont -lsysutil -lhttp -lhttputil -lssl -lnetctl -lnet -lsysmodule -lrt -llv2 -lstdc++ -lm -lz
 # Caché del recompilador al final del segmento de texto (docs/rec-ppe.md).
 LDFLAGS := -L$(ZLIB_PREFIX)/lib -T $(abspath $(R))/mk/rec-cache.ld -T lv2.ld
 
 include $(R)/mk/ps3.mk
+
+# Use stdio for the official 7z SDK on PS3; the SDK's POSIX creat() path is
+# unavailable in the PS3 toolchain. Keep the macro identical in the adapter
+# and SDK file object because it changes the CSzFile structure layout.
+$(OBJ)/src/frontend/sevenziprom.c.o $(OBJ)/third_party/7zip-lzma-sdk/C/7zFile.c.o: PPU_CFLAGS += -DUSE_FOPEN
 
 # Versión, título y APPID para version.c (menú, pausa y primera línea del
 # log). tools/build.sh calcula SALSA64_VERSION y SALSA64_COMMIT fuera del

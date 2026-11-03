@@ -18,7 +18,7 @@ LDLIBS  := -lm -lz -pthread
 # lib/rsxkit/src/fpgen.c es el codificador de fragment programs del RSX:
 # C puro, sin PSL1GHT, probado aquí con un intérprete del microcódigo.
 CORE_SRCS := $(wildcard $(ROOT)/src/core/*.c $(ROOT)/src/cpu/*.c $(ROOT)/src/rsp/gfx/*.c $(ROOT)/src/rsp/audio/*.c $(ROOT)/src/rsp/jpeg/*.c $(ROOT)/src/rsp/lle/*.c) $(ROOT)/src/frontend/padmap.c $(ROOT)/src/frontend/pacer.c \
-             $(ROOT)/src/frontend/audio_sync.c $(ROOT)/src/frontend/romlist.c $(ROOT)/src/frontend/ziprom.c $(ROOT)/src/frontend/menu.c \
+             $(ROOT)/src/frontend/audio_sync.c $(ROOT)/src/frontend/romlist.c $(ROOT)/src/frontend/ziprom.c $(ROOT)/tests/unit/stubs/archive_rom_stubs.c $(ROOT)/src/frontend/menu.c \
              $(ROOT)/src/frontend/osd_fps.c $(ROOT)/src/frontend/pausectl.c $(ROOT)/src/frontend/cheats.c $(ROOT)/src/frontend/cover.c $(ROOT)/src/frontend/namematch.c $(ROOT)/src/frontend/dlutil.c $(ROOT)/src/frontend/i18n.c \
              $(ROOT)/src/frontend/version.c $(ROOT)/src/frontend/perfilado.c $(ROOT)/src/frontend/savefile.c $(ROOT)/src/frontend/mempakfile.c $(ROOT)/src/frontend/transferpakfile.c \
              $(ROOT)/src/frontend/filters/crt_params.c $(ROOT)/src/frontend/cuelgue.c $(ROOT)/src/frontend/seda_calc.c $(ROOT)/src/frontend/cartucho_mesh.c $(ROOT)/src/frontend/thumbs_calc.c \

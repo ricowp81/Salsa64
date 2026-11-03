@@ -243,7 +243,7 @@ bool states_save(struct salsa64_n64 *n64, unsigned slot, struct states_timing *t
 
 	/* La escritura anterior tiene que haber terminado: la foto es una sola. */
 	if (!bg_idle(5000000)) {
-		snprintf(err, err_size, tr("el estado anterior sigue escribiéndose"));
+		snprintf(err, err_size, "%s", tr("el estado anterior sigue escribiéndose"));
 		return false;
 	}
 	if (bg.pending && bg.finished) {
@@ -294,7 +294,7 @@ bool states_load(struct salsa64_n64 *n64, unsigned slot, struct states_timing *t
 	*broken = false;
 	/* Cargar lo que se está escribiendo: esperar a que esté en el disco. */
 	if (!bg_idle(10000000)) {
-		snprintf(err, err_size, tr("el estado sigue escribiéndose"));
+		snprintf(err, err_size, "%s", tr("el estado sigue escribiéndose"));
 		return false;
 	}
 	uint64_t t0 = sysGetSystemTime();
@@ -303,7 +303,7 @@ bool states_load(struct salsa64_n64 *n64, unsigned slot, struct states_timing *t
 	memset(&io, 0, sizeof io);
 	s32 fd = -1;
 	if (sysLv2FsOpen(path, SYS_O_RDONLY, &fd, 0, NULL, 0) != 0) {
-		snprintf(err, err_size, tr("no hay estado"));
+		snprintf(err, err_size, "%s", tr("no hay estado"));
 		return false;
 	}
 	io.fd = fd;
