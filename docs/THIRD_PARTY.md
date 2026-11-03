@@ -174,26 +174,22 @@ y revisando los repositorios.
 | `assets/menu/prompts.png` (288×288) y `src/frontend/prompts_atlas.h`: íconos de botones (cruz, círculo, cuadrado, triángulo, SELECT, START, L1/R1/L2/R2/L3/R3, cruceta, stick del DualShock 3; A, B, Start, Z, L, R, cruceta, botones C y stick de la página de controles, con los de GameCube) | Kenney «Input Prompts» 1.5A (kenney.nl, carpetas PlayStation Series y Nintendo Gamecube, tamaño Default), reducidos de 64 a 48 píxeles por promedio de área y, los de GameCube, con el matiz de A (azul) y de B (verde) cambiado, el disco de Start en rojo y el gris de Z, L y R aplicado al dibujar; lo arma `tools/prompts-atlas.py` | CC0 1.0 (dominio público; el crédito a Kenney no es obligatorio, pero se da en el README). El paquete no trae botones de N64: se usan los de GameCube. Sin material de Nintendo ni de Sony |
 
 
-## Lectores de archivos ROM RAR y 7z
+## Lector de archivos ROM 7z
 
 | Componente | Origen fijado | Licencia | Uso |
 |---|---|---|---|
-| `third_party/libun7zip` | [kadorna1/libun7zip](https://github.com/kadorna1/libun7zip), commit `e2a195d2767d64c9c52ab0bd147ebb52124066ef` (7-Zip SDK 19.00) | Apache-2.0; conserva los avisos de dominio público de los fuentes originales del SDK | API `SzArEx_Extract`: inspecciona el directorio 7z y extrae un único miembro N64 a RAM, comprobando el CRC. No crea rutas en disco. Asignadores con límites para metadatos, temporales y bloque sólido. |
-| `third_party/libunrar-ps3` | [kadorna1/libunrar-ps3](https://github.com/kadorna1/libunrar-ps3), commit `1f2c10b31bd38454bc54008ba93289297df868c1` (UnRAR 5.9.2 + PPU compatibility fix) | Licencia UnRAR de Alexander Roshal, `license.txt` en el submódulo (no es GPL) | Modo `RAR_TEST` con callback: los bloques descomprimidos van a RAM y UnRAR verifica el CRC. Los miembros anteriores de un archivo sólido se procesan con un presupuesto acumulado de 64 MiB. |
+| `third_party/7zip-lzma-sdk/C/` | [LZMA SDK oficial](https://www.7-zip.org/sdk.html), versión **26.05** (2026-10-21), [`ip7z/7zip`](https://github.com/ip7z/7zip), etiqueta `26.05`, commit `b88c6bc09339de32f7d18bbab900686b244f42ba` | Dominio público, según el aviso oficial del LZMA SDK | Subconjunto de fuentes ANSI-C oficiales para abrir y extraer archivos 7z (`7zArcIn`, `7zDec`, LZMA/LZMA2, PPMd, CRC y flujos). Se conserva sin modificaciones bajo `C/`; Salsa64 aporta el adaptador acotado `src/frontend/sevenziprom.c`, que usa `SzArEx` para inspeccionar los miembros y extraer a RAM sin escribir nombres ni rutas del archivo al filesystem. |
 
-La versión PS3 de libunrar omite la consulta de espacio libre `sysFsStat`
-(no está disponible en el toolchain PSL1GHT usado aquí); el helper devuelve
-capacidad desconocida en PPU. El frontend usa `RAR_TEST` y un callback a RAM,
-por lo que no escribe miembros del archivo en el filesystem.
+El LZMA SDK oficial declara que su código está en el dominio público y que
+puede copiarse, modificarse, publicarse, usarse, compilarse, venderse y
+redistribuirse, en fuente o binario, con fines comerciales o no comerciales.
+El texto completo está en
+`third_party/7zip-lzma-sdk/LICENSE`; la procedencia y el commit están
+registrados arriba. Solo se incluyen los archivos C y encabezados necesarios
+para la extracción 7z: no se incorpora 7-Zip Extra ni `7z.dll`.
 
-Los lectores admiten el primer miembro `.z64`, `.v64` o `.n64` válido.
-No extraen nombres ni carpetas del archivo al sistema de archivos. ZIP sigue
-usando el lector propio `ziprom.c` y zlib, sin cambios. Los miembros con
-contraseña, las cabeceras 7z cifradas y los RAR multivolumen no se admiten.
-Se limita a 64 MiB el tamaño de la ROM y del bloque sólido 7z; el recorrido
-de los miembros anteriores de un RAR sólido también se acota a 64 MiB.
-
-La licencia UnRAR exige incluir el siguiente párrafo completo en la
-documentación y en los comentarios del código fuente del paquete resultante:
-
-> UnRAR source code may be used in any software to handle RAR archives without limitations free of charge, but cannot be used to develop RAR (WinRAR) compatible archiver and to re-create RAR compression algorithm, which is proprietary. Distribution of modified UnRAR source code in separate form or as a part of other software is permitted, provided that full text of this paragraph, starting from "UnRAR source code" words, is included in license, or in documentation if license is not available, and in source code comments of resulting package.
+El lector selecciona el primer miembro `.z64`, `.v64` o `.n64` válido.
+No extrae nombres ni carpetas del archivo al sistema de archivos. No admite
+cabeceras 7z cifradas ni miembros protegidos por contraseña. La ROM elegida
+y el bloque sólido que debe descomprimirse se limitan a 64 MiB. ZIP sigue
+usando el lector propio `ziprom.c` y zlib, sin cambios.

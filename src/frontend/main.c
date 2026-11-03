@@ -208,7 +208,6 @@
 #include "romlist.h"
 #include "ziprom.h"
 #include "archiverom.h"
-#include "rarrom.h"
 #include "sevenziprom.h"
 #include "savefile.h"
 #include "scale_auto.h"
@@ -1653,13 +1652,11 @@ static uint8_t *rom_open_paged(FILE *f, const char *path, uint32_t len, bool for
 static uint8_t *read_rom_file(const char *path, uint8_t *buf, uint32_t cap, uint32_t *size)
 {
 	rom_no_memory = false;
-	if (salsa64_rarrom_is_path(path) || salsa64_7zrom_is_path(path)) {
+	if (salsa64_7zrom_is_path(path)) {
 		uint8_t header[SALSA64_ROM_HEADER_SIZE];
 		uint32_t rom_len = 0, actual_len = 0;
 		uint32_t limit = buf ? cap : ROM_MAX;
-		int rc = salsa64_rarrom_is_path(path)
-			? salsa64_rarrom_read_header(path, header, &rom_len)
-			: salsa64_7zrom_read_header(path, header, &rom_len);
+		int rc = salsa64_7zrom_read_header(path, header, &rom_len);
 		if (rc != 0 || rom_len < SALSA64_ARCHIVEROM_MIN_ROM_SIZE ||
 		    rom_len > limit || rom_len > SALSA64_ARCHIVEROM_MAX_SIZE) {
 			rom_no_memory = rc == SALSA64_ARCHIVEROM_NOMEM;
@@ -1669,9 +1666,7 @@ static uint8_t *read_rom_file(const char *path, uint8_t *buf, uint32_t cap, uint
 		if (!dst)
 			return NULL;
 		uint32_t dst_cap = buf ? cap : rom_len;
-		rc = salsa64_rarrom_is_path(path)
-			? salsa64_rarrom_extract(path, dst, dst_cap, &actual_len)
-			: salsa64_7zrom_extract(path, dst, dst_cap, &actual_len);
+		rc = salsa64_7zrom_extract(path, dst, dst_cap, &actual_len);
 		if (rc != 0 || actual_len != rom_len) {
 			rom_no_memory = rc == SALSA64_ARCHIVEROM_NOMEM;
 			if (!buf)
@@ -1681,7 +1676,6 @@ static uint8_t *read_rom_file(const char *path, uint8_t *buf, uint32_t cap, uint
 		*size = actual_len;
 		return dst;
 	}
-
 	/* ZIP: se inspecciona la entrada elegida antes de reservar memoria, para que
 	 * el archivo no necesite un segundo búfer grande. La extracción completa
 	 * verifica el flujo Deflate, el tamaño descomprimido y el CRC-32 antes de
