@@ -172,3 +172,24 @@ y revisando los repositorios.
 | `assets/menu/cartucho.mesh` (473 vértices, 498 triángulos: posiciones, normales, UV y material de cada uno) y `assets/menu/cartucho_plastico.png` y `cartucho_etiqueta.png` (256×256 cada una: el color base del plástico y el sticker limpio con su margen, reducidos): el cartucho 3D de la fila elegida del menú | Generados por `tools/cartucho-malla.py` desde la malla «Cartuccia1» y la textura de color base del modelo «Stylized N64» de AlessandroFortuna (Sketchfab), ya sin el arte ni los logotipos de Nintendo; la etiqueta es la del segundo cartucho del modelo, ya sin el arte de Nintendo; al ejecutar, la carátula del juego se pinta dentro del sticker | CC BY 4.0, con el mismo crédito que el ícono. La normal map, la rugosidad y la textura original de la etiqueta no se usan |
 | `assets/menu/cartucho.png` (256×128): ícono del cartucho de la lista de juegos, de frente (a la izquierda; la mitad derecha queda vacía; el sticker, que el menú cubre con la miniatura de la carátula, ocupa los puntos 0,230–0,733 por 0,219–0,785 del cuadrado de 128) | Render propio del segundo cartucho del modelo «Stylized N64» de AlessandroFortuna (Sketchfab), modificado: sin el arte ni los logotipos de Nintendo de sus texturas (emblema, texto en relieve, etiquetas de juegos; el sticker conserva su forma y lleva plástico clonado de la cara de atrás), el cartucho solo, iluminado y reducido con Blender | CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/): se acredita al autor del modelo en el README y aquí. Las etiquetas originales del modelo no se usan |
 | `assets/menu/prompts.png` (288×288) y `src/frontend/prompts_atlas.h`: íconos de botones (cruz, círculo, cuadrado, triángulo, SELECT, START, L1/R1/L2/R2/L3/R3, cruceta, stick del DualShock 3; A, B, Start, Z, L, R, cruceta, botones C y stick de la página de controles, con los de GameCube) | Kenney «Input Prompts» 1.5A (kenney.nl, carpetas PlayStation Series y Nintendo Gamecube, tamaño Default), reducidos de 64 a 48 píxeles por promedio de área y, los de GameCube, con el matiz de A (azul) y de B (verde) cambiado, el disco de Start en rojo y el gris de Z, L y R aplicado al dibujar; lo arma `tools/prompts-atlas.py` | CC0 1.0 (dominio público; el crédito a Kenney no es obligatorio, pero se da en el README). El paquete no trae botones de N64: se usan los de GameCube. Sin material de Nintendo ni de Sony |
+
+
+## Lector de archivos ROM 7z
+
+| Componente | Origen fijado | Licencia | Uso |
+|---|---|---|---|
+| `third_party/7zip-lzma-sdk/C/` | [LZMA SDK oficial](https://www.7-zip.org/sdk.html), versión **26.05** (2026-10-21), [`ip7z/7zip`](https://github.com/ip7z/7zip), etiqueta `26.05`, commit `b88c6bc09339de32f7d18bbab900686b244f42ba` | Dominio público, según el aviso oficial del LZMA SDK | Subconjunto de fuentes ANSI-C oficiales para abrir y extraer archivos 7z (`7zArcIn`, `7zDec`, LZMA/LZMA2, PPMd, CRC y flujos). Se conserva sin modificaciones bajo `C/`; Salsa64 aporta el adaptador acotado `src/frontend/sevenziprom.c`, que usa `SzArEx` para inspeccionar los miembros y extraer a RAM sin escribir nombres ni rutas del archivo al filesystem. |
+
+El LZMA SDK oficial declara que su código está en el dominio público y que
+puede copiarse, modificarse, publicarse, usarse, compilarse, venderse y
+redistribuirse, en fuente o binario, con fines comerciales o no comerciales.
+El texto completo está en
+`third_party/7zip-lzma-sdk/LICENSE`; la procedencia y el commit están
+registrados arriba. Solo se incluyen los archivos C y encabezados necesarios
+para la extracción 7z: no se incorpora 7-Zip Extra ni `7z.dll`.
+
+El lector selecciona el primer miembro `.z64`, `.v64` o `.n64` válido.
+No extrae nombres ni carpetas del archivo al sistema de archivos. No admite
+cabeceras 7z cifradas ni miembros protegidos por contraseña. La ROM elegida
+y el bloque sólido que debe descomprimirse se limitan a 64 MiB. ZIP sigue
+usando el lector propio `ziprom.c` y zlib, sin cambios.

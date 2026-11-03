@@ -108,6 +108,7 @@ void t_suite_gamefix(void);
 void t_suite_ai(void);
 void t_suite_pif(void);
 void t_suite_rompg(void);
+void t_suite_archiverom(void);
 void t_suite_transferpak(void);
 void t_suite_idle(void);
 void t_suite_save(void);
