@@ -36,7 +36,22 @@ struct salsa64_rec;
 #define SALSA64_REC_XHASH       16384     /* cabezas de xhash */
 #define SALSA64_REC_VT_PAGES    16384     /* entradas de ktlb[]: bits 25–12 de la virtual */
 #define SALSA64_REC_PAGE_SHIFT  12
-#define SALSA64_REC_X_COPY_BYTES (1u << 20) /* copias de los bytes MIPS de los bloques mapeados (desprender) */
+/* Copias de los bytes MIPS de los bloques mapeados (para desprenderlos y
+ * engancharlos donde vuelva su página, o cuando se reescriben con los mismos
+ * bytes). Ranuras de 64, 128 y 256 bytes que se liberan al morir el bloque;
+ * hasta el 2026-10-28 era un reparto lineal de 1 MB que no se recuperaba
+ * hasta un vaciado completo: Perfect Dark lo llenaba en el primer minuto y
+ * desde ahí cada overlay recargado se retraducía entero (110 656
+ * retraducciones idénticas, el 77 % de sus compilaciones, en 318 s).
+ * SALSA64_REC_DBG_NO_COPY_FREE (jit-copias-viejas) repite el reparto viejo
+ * con su tope, para el A/B con el mismo binario. */
+#define SALSA64_REC_X_COPY_BYTES     (4u << 20)
+#define SALSA64_REC_X_COPY_OLD_BYTES (1u << 20)
+#define SALSA64_REC_X_COPY_CLASSES   3           /* 64 << clase bytes */
+/* Tope de bloques desprendidos a la vez (cada uno retiene su id, su copia y
+ * su código): por encima, invalidar mata como antes. Perfect Dark desprende
+ * hasta ~4500 por campo al recargar un overlay. */
+#define SALSA64_REC_X_MAX_DETACHED   16384u
 
 /* Estado de un bloque mapeado (x.state[]). */
 enum {
@@ -82,7 +97,9 @@ struct salsa64_rec_x {
 	uint8_t asid;
 	bool erl;
 	uint32_t nlive;          /* entradas de live[] */
-	uint32_t copy_used;      /* bytes ocupados de copy[] */
+	uint32_t copy_used;      /* bytes de copy[] repartidos alguna vez (las ranuras libres se reusan antes) */
+	uint32_t copy_free[SALSA64_REC_X_COPY_CLASSES];  /* cabeza (desplazamiento + 1) de las ranuras libres de cada clase, 0 = ninguna */
+	uint32_t ndetached;      /* bloques en SALSA64_REC_X_DETACHED */
 	struct salsa64_rec_xblock xb[SALSA64_REC_X_IDS];
 	uint16_t xhash[SALSA64_REC_XHASH];
 	uint16_t xpage[SALSA64_RDRAM_MAX >> SALSA64_REC_PAGE_SHIFT];
@@ -152,6 +169,14 @@ bool salsa64_rec_x_remove(struct salsa64_rec *rec, unsigned id);
 void salsa64_rec_x_invalidate(struct salsa64_rec *rec, uint32_t pa, uint32_t end);
 /* Mata los bloques fuera de KSEG0 que contienen `vpc`. */
 void salsa64_rec_x_kill_at(struct salsa64_rec *rec, uint64_t vpc);
+/* Sin ids libres: mata los bloques desprendidos (que retienen el suyo) para
+ * no vaciar la caché entera; devuelve cuántos. */
+unsigned salsa64_rec_x_reclaim(struct salsa64_rec *rec);
+/* Ranuras de copy[] (para las pruebas; rec_tlb.c las usa por dentro):
+ * reserva una para `bytes` y devuelve su desplazamiento + 1, o 0 si no hay;
+ * la libera. */
+uint32_t salsa64_rec_x_copy_alloc(struct salsa64_rec *rec, uint32_t bytes);
+void salsa64_rec_x_copy_free(struct salsa64_rec *rec, uint32_t off1, uint32_t bytes);
 
 /* rec.c, para rec_tlb.c. */
 void salsa64_rec_kill_block(struct salsa64_rec *rec, unsigned id);

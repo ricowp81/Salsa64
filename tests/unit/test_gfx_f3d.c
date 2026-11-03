@@ -725,19 +725,22 @@ static void f3d_near_clip(void)
 	const struct gfx_draw *d = draw_n(0);
 	CHECK(d && d->h.b == 9);
 	/* v0 (160,120), v1 (320,120), corte v1–v2 en (240,60), corte v2–v0
-	 * en (160,60); en abanico desde v0. */
-	static const float want[6][2] = { { 160, 120 }, { 320, 120 }, { 240, 60 }, { 160, 120 }, { 240, 60 }, { 160, 60 } };
+	 * en (160,60). El recorte recorre v0, v1, v2 con el anterior, como el
+	 * RSP (rdp.c): el corte v2–v0 sale antes que v0 y el abanico parte de
+	 * él: [I20, v0, v1, I12]. */
+	static const float want[6][2] = { { 160, 60 }, { 160, 120 }, { 320, 120 }, { 160, 60 }, { 320, 120 }, { 240, 60 } };
 	for (int i = 0; i < 6; i++) {
 		const struct gfx_vertex *o = &out_vtx[i];
 		CHECK(fabsf(o->x / o->w - want[i][0]) < 1e-3f && fabsf(o->y / o->w - want[i][1]) < 1e-3f);
 		CHECK(o->z >= -1e-4f);
 	}
-	CHECK_EQ(out_vtx[2].r, 100);  /* mitad de 200 y 0 */
-	CHECK_EQ(out_vtx[2].g, 50);
-	CHECK(fabsf(out_vtx[2].z) < 1e-4f);  /* el corte queda en el plano cercano */
-	/* Dos detrás (v2, v3): un triángulo de v0 a los cortes de v0–v2 y v3–v0. */
-	CHECK(fabsf(out_vtx[7].x / out_vtx[7].w - 160) < 1e-3f && fabsf(out_vtx[7].y / out_vtx[7].w - 60) < 1e-3f);
-	CHECK(fabsf(out_vtx[8].x / out_vtx[8].w - 240) < 1e-3f && fabsf(out_vtx[8].y / out_vtx[8].w - 60) < 1e-3f);
+	CHECK_EQ(out_vtx[5].r, 100);  /* mitad de 200 y 0 */
+	CHECK_EQ(out_vtx[5].g, 50);
+	CHECK(fabsf(out_vtx[5].z) < 1e-4f);  /* el corte queda en el plano cercano */
+	/* Dos detrás (v2, v3): un triángulo [I30, v0, I02]. */
+	CHECK(fabsf(out_vtx[6].x / out_vtx[6].w - 240) < 1e-3f && fabsf(out_vtx[6].y / out_vtx[6].w - 60) < 1e-3f);
+	CHECK(fabsf(out_vtx[7].x / out_vtx[7].w - 160) < 1e-3f && fabsf(out_vtx[7].y / out_vtx[7].w - 120) < 1e-3f);
+	CHECK(fabsf(out_vtx[8].x / out_vtx[8].w - 160) < 1e-3f && fabsf(out_vtx[8].y / out_vtx[8].w - 60) < 1e-3f);
 
 	start(false);
 	job_flags = GFX_JOB_NONEAR;

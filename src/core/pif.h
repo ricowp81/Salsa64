@@ -103,6 +103,9 @@ void salsa64_pif_set_pad(struct salsa64_bus *bus, unsigned port, const struct sa
 void salsa64_pif_written(struct salsa64_bus *bus);
 /* Antes de copiar la PIF RAM a la RDRAM por DMA del SI. */
 void salsa64_pif_execute(struct salsa64_bus *bus);
+/* Ciclos del VR4300 que tarda la lectura PIF RAM → RDRAM con lo que hay en la
+ * PIF RAM (la PIF ejecuta los intercambios joybus antes de contestar). */
+uint32_t salsa64_pif_read_cycles(const struct salsa64_bus *bus);
 
 /* CRC-8 de los datos del accesorio: polinomio 0x85, semilla 0. */
 uint8_t salsa64_joybus_crc8(const uint8_t *data, unsigned len);

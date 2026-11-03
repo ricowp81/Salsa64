@@ -68,6 +68,16 @@ bool bgio_out_write(void *ctx, const void *data, uint32_t len)
 	return true;
 }
 
+bool bgio_out_sync(struct bgio_out *o)
+{
+	if (o->fd < 0 || !out_flush(o))
+		return false;
+	uint64_t t0 = sysGetSystemTime();
+	bool ok = sysLv2FsFsync(o->fd) == 0;
+	o->us += sysGetSystemTime() - t0;
+	return ok;
+}
+
 bool bgio_out_patch(void *ctx, uint32_t offset, const uint8_t *data, uint32_t len)
 {
 	struct bgio_out *o = ctx;

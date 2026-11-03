@@ -25,6 +25,13 @@
 #else
 #define GFX_IMG1_COLD
 #endif
+/* Rutas frías en todas las imágenes del SPE 0 (el recorte contra la caja:
+ * pocos triángulos por tarea). */
+#ifdef __SPU__
+#define GFX_SPU_COLD __attribute__((optimize("Os")))
+#else
+#define GFX_SPU_COLD
+#endif
 
 #ifdef SALSA64_GFX_TRACE
 /* Depuración en el host (src/host/run.c): el estado resumido de cada dibujo. */
@@ -69,6 +76,7 @@ void gfx_rdp_reset(struct gfx_state *g)
 	g->prim = g->env = g->fog = g->blend = g->fill = 0;
 	g->prim_lod = g->prim_min = 0;
 	g->prim_z = g->prim_dz = 0;
+	g->k0 = g->k1 = g->k2 = g->k3 = g->k4 = g->k5 = 0;
 	g->scissor[0] = g->scissor[1] = 0;
 	g->scissor[2] = 320 << 2;
 	g->scissor[3] = 240 << 2;
@@ -175,48 +183,107 @@ static uint32_t fill_rgba(const struct gfx_state *g)
 	return r << 24 | gr << 16 | b << 8 | ((p & 1) ? 0xFF : 0);
 }
 
-/* Factor del blender como k + ka·α (α = alfa del color que entra). */
+/* Factor del blender como k + ka·α (α = alfa del color que entra): k en
+ * 255avos (0, 255 o el alfa de la niebla) y ka en {−1, 0, 1}. Enteros: en
+ * el SPE las comparaciones con flotantes y sus constantes pesaban ~900 bytes
+ * de código. */
 struct bl_factor {
-	float k, ka;
+	int k, ka;
 };
 
-static bool bl_eq(struct bl_factor f, float k, float ka)
+static bool bl_eq(struct bl_factor f, int k, int ka)
 {
-	return f.k > k - 1e-3f && f.k < k + 1e-3f && f.ka > ka - 1e-3f && f.ka < ka + 1e-3f;
+	return f.k == k && f.ka == ka;
 }
 
 /* P·A + M·B (n64brew.dev: Set Other Modes) llevado a lo que hace el RSX:
- * se suman los factores del color que entra (IN) y del de la memoria (MEM).
- * A_SHADE se toma como el alfa que entra; MEM_A como 1; los colores
- * constantes (blend, fog) en P los pone blend_constant, en M se ignoran. */
-static uint8_t classify_blend(unsigned p, unsigned a, unsigned m, unsigned b, uint32_t fog)
+ * se suman los factores del color que entra (IN) y del de la memoria (MEM)
+ * y se elige el modo de gfx_blend que los calcula tal cual. A_SHADE se toma
+ * como el alfa que entra; MEM_A como 1; los colores constantes (blend, fog)
+ * en P los pone blend_constant, en M se ignoran. IN·k + MEM con k el alfa
+ * de la niebla (G_RM_ADD) es la suma con el color escalado por k: lo escala
+ * blend_constant. Lo que no cabe en ningún modo sale como IN·α + MEM·(1 −
+ * α), que antes era la salida de todo lo que no fuera opaco, solo z o
+ * aditivo (GFX_JOB_BLEND_OLD vuelve a eso para comparar). */
+static uint8_t classify_blend(const struct gfx_state *g, unsigned p, unsigned a, unsigned m, unsigned b, uint32_t fog)
 {
-	struct bl_factor fa = { 0.0f, 0.0f }, fb = { 0.0f, 0.0f };
+	struct bl_factor fa = { 0, 0 }, fb = { 0, 0 };
 	switch (a) {
 	case BA_IN:
-	case BA_SHADE: fa.ka = 1.0f; break;
-	case BA_FOG:   fa.k = (fog & 0xFF) / 255.0f; break;
+	case BA_SHADE: fa.ka = 1; break;
+	case BA_FOG:   fa.k = (int)(fog & 0xFF); break;
 	default:       break;
 	}
 	switch (b) {
-	case BB_1MA: fb.k = 1.0f - fa.k, fb.ka = -fa.ka; break;
+	case BB_1MA: fb.k = 255 - fa.k, fb.ka = -fa.ka; break;
 	case BB_MEM:
-	case BB_ONE: fb.k = 1.0f; break;
+	case BB_ONE: fb.k = 255; break;
 	default:     break;
 	}
-	struct bl_factor in = { 0.0f, 0.0f }, mem = { 0.0f, 0.0f };
+	struct bl_factor in = { 0, 0 }, mem = { 0, 0 };
 	if (p == BL_IN) in.k += fa.k, in.ka += fa.ka;
 	if (p == BL_MEM) mem.k += fa.k, mem.ka += fa.ka;
 	if (m == BL_IN) in.k += fb.k, in.ka += fb.ka;
 	if (m == BL_MEM) mem.k += fb.k, mem.ka += fb.ka;
 
-	if (bl_eq(mem, 0.0f, 0.0f))
+	if (bl_eq(mem, 0, 0))
 		return GFX_BLEND_OFF;                 /* p. ej. IN·0 + IN·1 */
-	if (bl_eq(in, 0.0f, 0.0f) && bl_eq(mem, 1.0f, 0.0f))
+	if (bl_eq(in, 0, 0) && bl_eq(mem, 255, 0))
 		return GFX_BLEND_KEEP;                /* solo profundidad */
-	if (bl_eq(in, 0.0f, 1.0f) && bl_eq(mem, 1.0f, 0.0f))
+	if (bl_eq(in, 0, 1) && bl_eq(mem, 255, 0))
 		return GFX_BLEND_ADD;
+	if (g->job->flags & GFX_JOB_BLEND_OLD)
+		return GFX_BLEND_ALPHA;
+	/* Lo que el RDP multiplica por el alfa que entra, o por su complemento,
+	 * el RSX lo hace con los mismos factores. Vigilante 8 pinta cada
+	 * explosión, humo y resplandor en dos pasadas: MEM·A_IN con el color en
+	 * negro (oscurece el fondo según la textura) y encima IN + MEM con la
+	 * textura de color; vistas como IN·α + MEM·(1 − α) eran cuadros negros. */
+	if (bl_eq(in, 0, 0) && bl_eq(mem, 0, 1))
+		return GFX_BLEND_MUL;                 /* MEM·α */
+	if (bl_eq(in, 255, 0) && bl_eq(mem, 0, 1))
+		return GFX_BLEND_ADD_MUL;             /* IN + MEM·α */
+	if (bl_eq(in, 255, -1) && bl_eq(mem, 0, 1))
+		return GFX_BLEND_ALPHA_INV;           /* IN·(1 − α) + MEM·α */
+	if (in.ka == 0 && in.k > 0 && bl_eq(mem, 255, 0))
+		return GFX_BLEND_ADD_ONE;             /* IN·k + MEM: k lo aplica blend_constant */
 	return GFX_BLEND_ALPHA;                       /* IN·α + MEM·(1 − α) y parecidos */
+}
+
+/* El bit de alfa que el RDP deja en una color image de 16 bits en los
+ * ciclos 1 y 2 (gfx_draw.cvg_bit). No es el alfa de la mezcla: es la
+ * cobertura del píxel, 3 bits con el alto en el bit de alfa de RGBA5551 y
+ * los otros dos en los bits ocultos de la RDRAM. Con el píxel cubierto
+ * entero (cvg = 8; el RSX solo mira el centro) y mem la cobertura que lee
+ * de la memoria (7 sin IM_RD: no la lee), según CVG_DST:
+ *  - CLAMP: cvg − 1 sin mezcla, o cvg + mem con ella, hasta 7: el bit en 1;
+ *  - WRAP: (cvg + mem) & 7 = mem;
+ *  - FULL («ZAP»): 7;
+ *  - SAVE: mem.
+ * Con CVG_X_ALPHA la cobertura es cvg·α (α >> 5 con el píxel entero) y en
+ * CLAMP el bit sale del alfa: sin FORCE_BL, α >> 5 − 1 (en 1 desde α = 160;
+ * desde 128 sobre memoria en 0, con la mezcla del AA); con FORCE_BL,
+ * α >> 5 + mem, que sin IM_RD es siempre 7 y con IM_RD da 1 si la memoria
+ * ya estaba en 1 o desde α = 128. En WRAP y SAVE con CVG_X_ALPHA se toma la
+ * memoria, como sin él. Medido contra ares: Dr. Mario 64 dibuja los paneles
+ * translúcidos de su fondo (ZAP, FORCE_BL, IM_RD) con alfa 0,375 o el de una
+ * máscara y la consola deja el bit en 1 (#62; docs/framebuffer.md). */
+static uint8_t cvg_bit(uint32_t ol)
+{
+	bool im_rd = (ol & IM_RD) != 0;
+	switch (ol & CVG_DST_MASK) {
+	case CVG_DST_WRAP:
+	case CVG_DST_SAVE:
+		return im_rd ? GFX_CVG_KEEP : GFX_CVG_ONE;
+	case CVG_DST_FULL:
+		return GFX_CVG_ONE;
+	default:
+		if (!(ol & CVG_X_ALPHA))
+			return GFX_CVG_ONE;
+		if (ol & FORCE_BL)
+			return im_rd ? GFX_CVG_MAX : GFX_CVG_ONE;
+		return GFX_CVG_ALPHA;
+	}
 }
 
 static void blend_state(const struct gfx_state *g, struct gfx_draw *d)
@@ -226,16 +293,29 @@ static void blend_state(const struct gfx_state *g, struct gfx_draw *d)
 	unsigned c1p = (ol >> 28) & 3, c1a = (ol >> 24) & 3, c1m = (ol >> 20) & 3, c1b = (ol >> 16) & 3;
 	unsigned p = c0p, a = c0a, m = c0m, b = c0b;
 
+	bool fog_shade = c0p == BL_FOG && c0a == BA_SHADE && c0m == BL_IN && c0b == BB_1MA;
 	if (d->cycle == G_CYC_2CYCLE) {
 		/* Primer ciclo de niebla (G_RM_FOG_SHADE_A): fog·a_shade + in·(1−a). */
-		if (c0p == BL_FOG && c0a == BA_SHADE && c0m == BL_IN && c0b == BB_1MA) {
+		if (fog_shade) {
 			d->fog = 1;
 			d->fog_color = g->fog;
 		}
 		p = c1p, a = c1a, m = c1m, b = c1b;
+	} else if (d->cycle == G_CYC_1CYCLE && fog_shade && (ol & FORCE_BL) &&
+		   !(g->job->flags & GFX_JOB_NO_FOG_1CYCLE)) {
+		/* La misma mezcla en un solo ciclo con FORCE_BL (othermode L
+		 * 0xFA006220: la pista de F-Zero X, con G_FOG): el RDP la hace en
+		 * todos los píxeles, FOG·a + IN·(1 − a), y escribe sin leer la
+		 * memoria. Se clasificaba como «sin mezcla» y la pista lejana salía
+		 * sin niebla (en la consola se funde con el cielo). Sin FORCE_BL la
+		 * mezcla solo toca los bordes con AA y el interior escribe P: no es
+		 * niebla. */
+		d->fog = 1;
+		d->fog_color = g->fog;
 	}
 
-	d->blend = !(ol & FORCE_BL) ? GFX_BLEND_OFF : classify_blend(p, a, m, b, g->fog);
+	d->blend = !(ol & FORCE_BL) ? GFX_BLEND_OFF : classify_blend(g, p, a, m, b, g->fog);
+	d->cvg_bit = cvg_bit(ol);
 	/* G_RM_VISCVG: IM_RD | FORCE_BL y el blender IN·0 + BL·A_MEM. */
 	if ((ol & (IM_RD | FORCE_BL)) == (IM_RD | FORCE_BL) && p == BL_IN && a == BA_ZERO && m == BL_BL && b == BB_MEM)
 		d->viscvg = 1;
@@ -296,6 +376,17 @@ static void blend_constant(const struct gfx_state *g, struct gfx_draw *d)
 	unsigned sh = d->cycle == G_CYC_2CYCLE ? 0 : 2;  /* el ciclo que escribe */
 	unsigned p = (ol >> (28 + sh)) & 3, a = (ol >> (24 + sh)) & 3;
 	unsigned m = (ol >> (20 + sh)) & 3, b = (ol >> (16 + sh)) & 3;
+	float fa = (float)(g->fog & 0xFF) / 255.0f;
+	/* IN·A_FOG + MEM (G_RM_ADD): la suma con el color ya escalado por el
+	 * alfa de la niebla (con 255, tal cual). */
+	if (p == BL_IN) {
+		if (d->blend == GFX_BLEND_ADD_ONE && a == BA_FOG && fa < 1.0f)
+			for (int k = 0; k < GFX_K_TERMS; k++)
+				for (int j = 0; j < 3; j++)
+					for (int l = 0; l < 3; l++)
+						d->k[k][j][l] *= fa;
+		return;
+	}
 	if (p != BL_FOG && p != BL_BL)
 		return;
 	/* Sin escritura de color (solo z, como la máscara de la Lente de la
@@ -314,7 +405,6 @@ static void blend_constant(const struct gfx_state *g, struct gfx_draw *d)
 	uint32_t c = p == BL_FOG ? g->fog : g->blend;
 	float rgb[3] = { (float)(c >> 24) / 255.0f, (float)((c >> 16) & 0xFF) / 255.0f,
 			 (float)((c >> 8) & 0xFF) / 255.0f };
-	float fa = (float)(g->fog & 0xFF) / 255.0f;
 	if (toward) {
 		for (int k = 0; k < GFX_K_TERMS; k++)
 			for (int j = 0; j < 3; j++)
@@ -337,7 +427,7 @@ static void blend_constant(const struct gfx_state *g, struct gfx_draw *d)
 		d->k[one][2][3] = 1.0f;
 	d->fog = 0;
 	if (force)
-		d->blend = classify_blend(BL_IN, a, m, b, g->fog);
+		d->blend = classify_blend(g, BL_IN, a, m, b, g->fog);
 }
 
 static float shift_scale(unsigned shift)
@@ -490,11 +580,13 @@ static void build_state(struct gfx_state *g, struct gfx_draw *d, enum prim_kind 
 		 * necesita (rsxkit_draw.dst_alpha). Sin prueba de alfa en un relleno. */
 		d->aref = c[3];
 		d->cycle = G_CYC_FILL;
+		d->cvg_bit = GFX_CVG_ALPHA;  /* el bit del color de relleno */
 		return;
 	}
 	if (d->cycle == G_CYC_COPY) {
 		for (int lane = 0; lane < 4; lane++)
 			d->k[GFX_K_T0][0][lane] = 1.0f;
+		d->cvg_bit = GFX_CVG_ALPHA;  /* el RDP copia los 16 bits del texel */
 		d->ntex = 1;
 		if (!texture_state(g, d, tile, 0, true, g->rect_clamp & 3u, g->rect_lim))
 			d->ntex = 0;
@@ -632,7 +724,7 @@ static struct gfx_vertex *begin_prim(struct gfx_state *g, enum prim_kind kind, i
 		g->res->t_state += gfx_io_clock() - t0;
 		GFX_DETAIL(g, g->detail->state_builds++);
 		d.prim_kind = kind;
-		d.prim_tile = (uint32_t)tile;
+		d.prim_tile = (uint16_t)tile;
 		g->dirty = false;
 		/* Mismo estado que el dibujo abierto: se continúa. Con la z del
 		 * primitivo, también la misma z: el consumidor da una sola a
@@ -660,7 +752,8 @@ static struct gfx_vertex *begin_prim(struct gfx_state *g, enum prim_kind kind, i
 }
 
 /* Punto de a→b a la fracción t: la salida es lineal en las coordenadas de
- * recorte, así que se interpola ya escrita. */
+ * recorte, así que se interpola ya escrita. Con GFX_JOB_INTERP, entre dos
+ * lugares del mismo grupo lleva la identidad del tramo (gfx.h); si no, 0. */
 static void lerp_vertex(struct gfx_vertex *o, const struct gfx_vertex *a, const struct gfx_vertex *b, float t)
 {
 	o->x = a->x + (b->x - a->x) * t;
@@ -673,7 +766,114 @@ static void lerp_vertex(struct gfx_vertex *o, const struct gfx_vertex *a, const 
 	o->g = (uint8_t)(a->g + (b->g - a->g) * t + 0.5f);
 	o->b = (uint8_t)(a->b + (b->b - a->b) * t + 0.5f);
 	o->a = (uint8_t)(a->a + (b->a - a->a) * t + 0.5f);
-	o->pad = 0;
+	uint32_t ia = a->pad, ib = b->pad;
+	o->pad = ia && ia < (1u << 25) && GFX_VGID_SERIAL(ia) == GFX_VGID_SERIAL(ib)
+		 ? GFX_VCLIP_ID(GFX_VGID_SERIAL(ia), GFX_VGID_INDEX(ia), GFX_VGID_INDEX(ib)) : 0;
+}
+
+/* El RSP recorta cada triángulo contra el plano cercano y contra la caja
+ * del clip ratio (el viewport agrandado r veces, clip_box) antes de
+ * mandarlo al RDP, y el RDP interpola el sombreado lineal en pantalla
+ * dentro de cada triángulo que recibe. Un triángulo con dos vértices cerca
+ * de la cámara y muy fuera de la pantalla (el fondo de las pistas de F-Zero
+ * X) llega a lo visible con la sombra del polígono recortado, no con la
+ * del triángulo entero corregida por perspectiva; para reproducirlo hace
+ * falta el mismo polígono y el mismo abanico que el microcódigo. Medido
+ * contra el microcódigo real (F3DEX2 fifo 2.03 en la LLE del host: 114 de
+ * 115 abanicos): Sutherland–Hodgman plano por plano; cada plano recorre el
+ * polígono desde su primer vértice con el anterior (la intersección sale
+ * antes que el vértice que entra); el plano izquierdo va al final; el
+ * polígono se dibuja en abanico desde su primer vértice y cada triángulo
+ * del abanico pasa por el rechazo trivial de los planos de la pantalla (los
+ * que quedan enteros fuera de un mismo plano no se dibujan). Las
+ * coordenadas de salida son píxeles por w: los planos son lineales en
+ * ellas. Cada plano agrega a lo más un vértice: 3 + 5 como máximo.
+ * GFX_JOB_NO_RSP_CLIP deja solo el plano cercano, como antes. */
+#define CLIP_MAX 9
+
+/* Un plano a·x + b·y + c·w ≥ 0 sobre el polígono src[0..n): deja el
+ * resultado en dst y devuelve sus vértices (0 si queda todo fuera). */
+static GFX_SPU_COLD unsigned clip_plane(const struct gfx_vertex *src, unsigned n, float a, float b, float c,
+					  struct gfx_vertex *dst)
+{
+	float d[CLIP_MAX];
+	unsigned in = 0, m = 0;
+	for (unsigned i = 0; i < n; i++) {
+		d[i] = a * src[i].x + b * src[i].y + c * src[i].w;
+		in += d[i] >= 0.0f;
+	}
+	if (in == n) {
+		memcpy(dst, src, n * sizeof *src);
+		return n;
+	}
+	for (unsigned i = 0; i < n && m + 2 <= CLIP_MAX; i++) {
+		unsigned j = i ? i - 1 : n - 1;
+		bool ci = d[i] >= 0.0f, cj = d[j] >= 0.0f;
+		if (ci != cj) {
+			lerp_vertex(&dst[m], &src[j], &src[i], d[j] / (d[j] - d[i]));
+			dst[m++].pad = 0;  /* GFX_VCLIP_ID es solo del plano cercano (gfx.h) */
+		}
+		if (ci)
+			dst[m++] = src[i];
+	}
+	return m;
+}
+
+/* El polígono p[0..n) contra la caja del clip ratio, en el orden del
+ * microcódigo (derecha, abajo, arriba, izquierda); devuelve los vértices
+ * que quedan en p. */
+static GFX_SPU_COLD unsigned clip_box_poly(const struct gfx_state *g, struct gfx_vertex *p, unsigned n)
+{
+	struct gfx_vertex q[CLIP_MAX];
+	float lim[4];
+	for (int i = 0; i < 2; i++) {
+		float r = g->clip_ratio[i] * (g->vscale[i] < 0.0f ? -g->vscale[i] : g->vscale[i]);
+		lim[2 * i] = g->vtrans[i] - r;
+		lim[2 * i + 1] = g->vtrans[i] + r;
+	}
+	n = clip_plane(p, n, -1.0f, 0.0f, lim[1], q);   /* x ≤ xhi·w */
+	n = clip_plane(q, n, 0.0f, -1.0f, lim[3], p);   /* y ≤ yhi·w */
+	n = clip_plane(p, n, 0.0f, 1.0f, -lim[2], q);   /* y ≥ ylo·w */
+	n = clip_plane(q, n, 1.0f, 0.0f, -lim[0], p);   /* x ≥ xlo·w */
+	return n;
+}
+
+/* ¿Algún vértice de p[0..n) fuera de la caja del clip ratio? */
+static inline bool outside_box(const struct gfx_state *g, const struct gfx_vertex *p, unsigned n)
+{
+	float r0 = g->clip_ratio[0] * (g->vscale[0] < 0.0f ? -g->vscale[0] : g->vscale[0]);
+	float r1 = g->clip_ratio[1] * (g->vscale[1] < 0.0f ? -g->vscale[1] : g->vscale[1]);
+	float xlo = g->vtrans[0] - r0, xhi = g->vtrans[0] + r0, ylo = g->vtrans[1] - r1, yhi = g->vtrans[1] + r1;
+	bool out = false;
+	for (unsigned i = 0; i < n; i++) {
+		float w = p[i].w;
+		out |= p[i].x < xlo * w || p[i].x > xhi * w || p[i].y < ylo * w || p[i].y > yhi * w;
+	}
+	return out;
+}
+
+/* Abanico desde p[0] de un polígono recortado: qué triángulos (bit i:
+ * p[0], p[i], p[i+1]) se dibujan y cuántos son. Los enteros fuera de un
+ * plano de la pantalla no (como el rechazo trivial del RSP con los vértices
+ * nuevos). Hoja: no suma a la cadena de begin_prim. */
+static GFX_SPU_COLD unsigned fan_keep(const struct gfx_state *g, const struct gfx_vertex *p, unsigned n,
+				      unsigned *count)
+{
+	float sx = g->vscale[0] < 0.0f ? -g->vscale[0] : g->vscale[0];
+	float sy = g->vscale[1] < 0.0f ? -g->vscale[1] : g->vscale[1];
+	float xlo = g->vtrans[0] - sx, xhi = g->vtrans[0] + sx, ylo = g->vtrans[1] - sy, yhi = g->vtrans[1] + sy;
+	unsigned flags[CLIP_MAX], keep = 0;
+	*count = 0;
+	for (unsigned i = 0; i < n; i++) {
+		float w = p[i].w;
+		flags[i] = (p[i].x < xlo * w) | (p[i].x > xhi * w) << 1 | (p[i].y < ylo * w) << 2 | (p[i].y > yhi * w) << 3;
+	}
+	for (unsigned i = 1; i + 1 < n; i++)
+		if (!(flags[0] & flags[i] & flags[i + 1])) {
+			keep |= 1u << i;
+			(*count)++;
+		}
+	return keep;
 }
 
 void gfx_triangle(struct gfx_state *g, uint32_t a, uint32_t b, uint32_t c)
@@ -688,7 +888,7 @@ void gfx_triangle(struct gfx_state *g, uint32_t a, uint32_t b, uint32_t c)
 		GFX_DETAIL(g, g->detail->triangles_common++);
 		goto detail_done;
 	}
-	struct gfx_vertex p[4];
+	struct gfx_vertex p[CLIP_MAX];
 	for (int i = 0; i < 3; i++)
 		gfx_vtx_out(g, v[i], &p[i]);
 	if (!(g->geom & G_SHADING_SMOOTH)) {
@@ -704,6 +904,7 @@ void gfx_triangle(struct gfx_state *g, uint32_t a, uint32_t b, uint32_t c)
 	 * dibuja y un triángulo que lo cruza sale como uno o dos. Sin esto, los
 	 * vértices con w ≈ 0 o negativa se proyectan lejísimos. */
 	unsigned n = 3;
+	bool clipped = false;
 	if (g->near_clip) {
 		float d[3];
 		unsigned behind = 0;
@@ -720,34 +921,37 @@ void gfx_triangle(struct gfx_state *g, uint32_t a, uint32_t b, uint32_t c)
 			struct gfx_vertex in[3] = { p[0], p[1], p[2] };
 			n = 0;
 			for (int i = 0; i < 3; i++) {
-				int j = i == 2 ? 0 : i + 1;
-				if (d[i] >= 0.0f)
+				int j = i ? i - 1 : 2;
+				bool ci = d[i] >= 0.0f, cj = d[j] >= 0.0f;
+				if (ci != cj)
+					lerp_vertex(&p[n++], &in[j], &in[i], d[j] / (d[j] - d[i]));
+				if (ci)
 					p[n++] = in[i];
-				if ((d[i] < 0.0f) != (d[j] < 0.0f)) {
-					lerp_vertex(&p[n], &in[i], &in[j], d[i] / (d[i] - d[j]));
-					/* GFX_JOB_INTERP: entre dos lugares del mismo grupo
-					 * (gfx.h); sin la bandera las identidades son 0. */
-					uint32_t a = in[i].pad, b = in[j].pad;
-					if (a && a < (1u << 25) && GFX_VGID_SERIAL(a) == GFX_VGID_SERIAL(b))
-						p[n].pad = GFX_VCLIP_ID(GFX_VGID_SERIAL(a), GFX_VGID_INDEX(a), GFX_VGID_INDEX(b));
-					n++;
-				}
 			}
+			clipped = true;
 		}
 	}
-	struct gfx_vertex *o = begin_prim(g, PRIM_TRI, g->tex_tile, 3 * (n - 2));
+	/* La caja del clip ratio: solo si algún vértice se sale de ella. */
+	if (!(g->job->flags & GFX_JOB_NO_RSP_CLIP) && outside_box(g, p, n)) {
+		GFX_DETAIL(g, g->detail->triangles_clipped++);
+		n = clip_box_poly(g, p, n);
+		clipped = true;
+	}
+	unsigned count = 1, keep = 2;  /* sin recorte: el triángulo (p[0], p[1], p[2]) */
+	if (clipped && !(n >= 3 && (keep = fan_keep(g, p, n, &count))))
+		goto detail_done;
+	struct gfx_vertex *o = begin_prim(g, PRIM_TRI, g->tex_tile, 3 * count);
 	if (!o)
 		goto detail_done;
 	g->res->triangles++;
 	GFX_DETAIL(g, g->detail->triangles_ok++);
-	o[0] = p[0];
-	o[1] = p[1];
-	o[2] = p[2];
-	if (n == 4) {
-		o[3] = p[0];
-		o[4] = p[2];
-		o[5] = p[3];
-	}
+	for (unsigned i = 1; i + 1 < n; i++)
+		if (keep & (1u << i)) {
+			o[0] = p[0];
+			o[1] = p[i];
+			o[2] = p[i + 1];
+			o += 3;
+		}
 detail_done:
 	GFX_DETAIL(g, g->detail->t_triangle += gfx_io_clock() - td - (g->res->t_state - ts));
 }
@@ -1163,10 +1367,15 @@ GFX_IMG1_COLD void gfx_rdp_command(struct gfx_state *g, uint32_t w0, uint32_t w1
 	case G_SETKEYR:
 		return;
 	case G_SETCONVERT:
-		/* K0–K3 son de la conversión YUV (sin uso aquí); K4 y K5 son
-		 * entradas del combiner (Conker: (SHADE − ENV)·K5 + PRIM). */
+		/* K0–K3 convierten YUV en el filtro; K4 y K5 quedan en el
+		 * combiner. Otra matriz invalida también las tiles resueltas. */
+		g->k0 = (uint16_t)((w0 >> 13) & 0x1FF);
+		g->k1 = (uint16_t)((w0 >> 4) & 0x1FF);
+		g->k2 = (uint16_t)(((w0 & 15) << 5) | (w1 >> 27));
+		g->k3 = (uint16_t)((w1 >> 18) & 0x1FF);
 		g->k4 = (uint16_t)((w1 >> 9) & 0x1FF);
 		g->k5 = (uint16_t)(w1 & 0x1FF);
+		g->tex_gen++;
 		break;
 	case G_SETSCISSOR:
 		g->scissor[0] = (w0 >> 12) & 0xFFF;

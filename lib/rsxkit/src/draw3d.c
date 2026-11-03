@@ -17,6 +17,13 @@
  * posiciones (rsxkit_lincomb_lerp.vcg): cada vértice va en prev + (pos −
  * prev)·t, para dibujar un cuadro intermedio entre dos con la misma lista.
  *
+ * Sombreado lineal en pantalla (rsxkit_affine_shade): el vertex program
+ * multiplica los siete X_j por w (constante «affine») y los fragment
+ * programs los leen con el bit de SRC2 que quita la corrección de
+ * perspectiva (fprog.c, fpgen.c): el RSX interpola X_j·w/w = X_j lineal en
+ * pantalla, como el RDP de la N64. Hay una copia de cada programa
+ * precompilado con ese bit y los generados lo llevan en su descripción.
+ *
  * Profundidad: z/w en [0, 1] con LEQUAL (LESS con RSXKIT_DEPTH_LESS); sin recorte por los planos
  * cercano y lejano (la z se satura), como hacen los microcódigos de N64
  * sin recorte cercano. El recorte por w > 0 lo sigue haciendo el RSX. Con
@@ -39,11 +46,12 @@ extern const u8 rsxkit_lincomb1_fpo[];
 extern const u8 rsxkit_lincomb2_fpo[];
 
 /* Constantes del vertex program, en su orden: space, xf[2], k[21], fog,
- * fogsel[2]. */
-#define NCONST   27
+ * fogsel[2], affine. */
+#define NCONST   28
 #define C_K      3
 #define C_FOG    24
 #define C_FOGSEL 25
+#define C_AFFINE 27
 
 struct tex_state {
 	int valid;
@@ -60,11 +68,25 @@ struct vprog {
 	int block;  /* constantes consecutivas: se suben de una vez */
 };
 
+static int incremental;
+void rsxkit_3d_incremental(int enabled) { incremental = !!enabled; }
+/* 1: recargar el programa y escribir su etiqueta de uso en cada dibujo (lo
+ * de antes); 0 (inicial): solo al cambiar de programa y al salir del 3D. */
+static int program_sync_per_draw;
+void rsxkit_3d_program_sync(int per_draw) { program_sync_per_draw = !!per_draw; }
+
 static struct {
+	int stencil_valid;
+	uint64_t stencil_key;
 	int ready;
+	rsxkit_program *cur_program; /* programa del usuario cargado (NULL: ninguno o precompilado) */
+	int program_pending;         /* dibujos con cur_program sin etiqueta de uso */
+	int color_aux;               /* COLOR0 desde la palabra `pad` del vértice */
 	struct vprog prog[2];   /* 0: el de siempre; 1: con posiciones interpoladas */
 	rsxFragmentProgram *fp[3];
 	u32 fp_offset[3];
+	rsxFragmentProgram *fp_aff[3];  /* los mismos, con los X_j sin corrección de perspectiva */
+	u32 fp_aff_offset[3];
 	const void *cur_fp;     /* programa cargado (g->fp_3d >= 0): precompilado o de la caché */
 	uint32_t cur_fp_gen;    /* generación de la caché cuando se cargó */
 	float c[NCONST][4];
@@ -86,11 +108,19 @@ static struct {
 	float t;
 } d3;
 
+/* rsxkit_affine_shade; fuera de d3, que se borra al cerrar el 3D. */
+static int affine_on;
+
 static const char *const const_names[NCONST] = {
 	"space", "xf[0]", "xf[1]", "k[0]", "k[1]", "k[2]", "k[3]", "k[4]", "k[5]", "k[6]", "k[7]",
 	"k[8]", "k[9]", "k[10]", "k[11]", "k[12]", "k[13]", "k[14]", "k[15]", "k[16]", "k[17]", "k[18]",
-	"k[19]", "k[20]", "fog", "fogsel[0]", "fogsel[1]",
+	"k[19]", "k[20]", "fog", "fogsel[0]", "fogsel[1]", "affine",
 };
+
+void rsxkit_affine_shade(int on)
+{
+	affine_on = on != 0;
+}
 
 static int vprog_init(struct vprog *p, const u8 *vpo, int lerp)
 {
@@ -120,7 +150,9 @@ static int init_3d(void)
 	const u8 *fps[3] = { rsxkit_lincomb0_fpo, rsxkit_lincomb1_fpo, rsxkit_lincomb2_fpo };
 	for (int i = 0; i < 3; i++) {
 		d3.fp[i] = (rsxFragmentProgram *)fps[i];
-		if (!rsxkit_fp_upload(d3.fp[i], &d3.fp_offset[i]))
+		d3.fp_aff[i] = (rsxFragmentProgram *)fps[i];
+		if (!rsxkit_fp_upload(d3.fp[i], &d3.fp_offset[i]) ||
+		    !rsxkit_fp_upload_affine(d3.fp_aff[i], &d3.fp_aff_offset[i]))
 			return RSXKIT_ENOMEM;
 	}
 	d3.ready = 1;
@@ -148,9 +180,20 @@ void rsxkit_forget_state(void)
 	rsxkit_bound.scissor_valid = 0;
 }
 
+/* Etiqueta de uso del programa con dibujos pendientes: antes de cambiar de
+ * programa, al salir del 3D y antes de destruir un programa. */
+void rsxkit_3d_flush_use(void)
+{
+	if (d3.program_pending && d3.cur_program)
+		rsxkit_program_used_3d(d3.cur_program);
+	d3.program_pending = 0;
+}
+
 void rsxkit_leave_3d(void)
 {
 	struct rsxkit_state *g = &rsxkit_g;
+	rsxkit_3d_flush_use();
+	d3.cur_program = NULL;
 	if (g->arrays_bound) {
 		rsxkit_reserve(80);
 		for (int i = 0; i < 16; i++)
@@ -162,6 +205,13 @@ void rsxkit_leave_3d(void)
 	g->fp_3d = -1;
 	g->state_valid = 0;
 	d3.c_valid = 0;
+}
+
+void rsxkit_3d_forget_vertices(void)
+{
+	d3.vb_set = 0;
+	d3.prev_set = 0;
+	rsxkit_g.arrays_bound = 0;
 }
 
 void rsxkit_vertices(uint32_t offset, uint8_t location)
@@ -177,6 +227,14 @@ void rsxkit_vertices(uint32_t offset, uint8_t location)
 	rsxInvalidateVertexCache(g->ctx);
 	rsxInvalidateTextureCache(g->ctx, GCM_INVALIDATE_TEXTURE);
 	d3.tex[0].valid = d3.tex[1].valid = 0;
+}
+
+void rsxkit_vertices_color_aux(int aux)
+{
+	aux = !!aux;
+	if (d3.color_aux != aux)
+		rsxkit_g.arrays_bound = 0;
+	d3.color_aux = aux;
 }
 
 void rsxkit_vertices_prev(uint32_t offset, uint8_t location, float t)
@@ -197,7 +255,8 @@ static void bind_arrays(void)
 	const u8 stride = sizeof(rsxkit_vertex);
 	rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_POS, 0, o + 0, stride, 4, GCM_VERTEX_DATA_TYPE_F32, loc);
 	rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_TEX0, 0, o + 16, stride, 2, GCM_VERTEX_DATA_TYPE_F32, loc);
-	rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, o + 24, stride, 4, GCM_VERTEX_DATA_TYPE_U8, loc);
+	rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, o + (d3.color_aux ? 28 : 24), stride, 4,
+				 GCM_VERTEX_DATA_TYPE_U8, loc);
 	if (d3.prev_set) {
 		u8 ploc = d3.prev_location == RSXKIT_MEM_MAIN ? GCM_LOCATION_CELL : GCM_LOCATION_RSX;
 		rsxBindVertexArrayAttrib(g->ctx, GCM_VERTEX_ATTRIB_TEX1, 0, d3.prev_offset, 16, 4,
@@ -217,6 +276,7 @@ static void fixed_state(void)
 	struct rsxkit_state *g = &rsxkit_g;
 	gcmContextData *ctx = g->ctx;
 	rsxSetColorMaskMrt(ctx, 0);
+	rsxSetDitherEnable(ctx, GCM_FALSE);
 	rsxSetShadeModel(ctx, GCM_SHADE_MODEL_SMOOTH);
 	rsxSetZMinMaxControl(ctx, GCM_FALSE, GCM_TRUE, GCM_FALSE);
 	rsxSetDepthFunc(ctx, GCM_LEQUAL);
@@ -228,46 +288,110 @@ static void fixed_state(void)
 	/* Forzar que el primer dibujo ponga todo. */
 	d3.blend = d3.cull = d3.depth = d3.alpha_ref = 0xFF;
 	d3.line_width = 0;
+	d3.stencil_valid = 0;
 	d3.tex[0].valid = d3.tex[1].valid = 0;
 	rsxkit_bound.scissor_valid = 0;
 	g->state_valid = 1;
 }
 
-/* El alfa que queda en un destino con alfa (rsxkit_bound.alpha): 1 en cada
- * píxel escrito (la mezcla de alfa pasa a ONE / ZERO, que no mira el alfa
- * del fragmento), o el del fragmento con RSXKIT_DSTA_FRAG sin mezcla. Sin
- * alfa en el destino, el canal de alfa de la mezcla no cuenta. */
+/* La pasada del alfa de un dibujo con RSXKIT_DSTA_ONE (dsta.c): sin mezcla
+ * y con la máscara de color en el alfa solo. */
+#define DSTA_ALPHA_ONLY RSXKIT_DSTA_PASS
+
+/* El alfa que queda en un destino con alfa (rsxkit_bound.alpha), según
+ * rsxkit_draw.dst_alpha y con cualquier mezcla del color: el del fragmento
+ * (factores ONE / ZERO del canal alfa), el del destino (la máscara de color
+ * sin el alfa) o el mayor de los dos (ecuación MAX, que no mira los
+ * factores). La mezcla no puede dar una constante: el canal alfa sale de
+ * As·fs + Ad·fd y todos los factores multiplican (GCM_CONSTANT_ALPHA da
+ * As·Ac, no Ac). RSXKIT_DSTA_ONE lo resuelve rsxkit_draw_triangles con dos
+ * pasadas; aquí vale como el del fragmento. Sin alfa en el destino, el
+ * canal de alfa de la mezcla no cuenta (ZERO / ONE). Las mezclas con
+ * máximo o mínimo del alfa (ALPHA_MAX, REPLACE_MIN_ALPHA, KEEP_MIN_ALPHA)
+ * traen su propia cuenta y no miran dst_alpha. */
 static void set_blend(uint8_t blend, uint8_t dsta)
 {
 	gcmContextData *ctx = rsxkit_g.ctx;
-	uint8_t key = (uint8_t)(blend | (dsta ? 0x10 : 0));
+	int alpha = rsxkit_bound.alpha;
+	if (!alpha || dsta > DSTA_ALPHA_ONLY)
+		dsta = RSXKIT_DSTA_FRAG;  /* sin alfa no cuenta: una sola clave */
+	if (dsta == RSXKIT_DSTA_ONE)
+		dsta = RSXKIT_DSTA_FRAG;
+	if (dsta == DSTA_ALPHA_ONLY)
+		blend = RSXKIT_BLEND_OFF;
+	uint8_t key = (uint8_t)(blend | dsta << 5);
 	if (key == d3.blend)
 		return;
 	d3.blend = key;
-	int alpha = rsxkit_bound.alpha;
+	bool own = blend == RSXKIT_BLEND_ALPHA_MAX || blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA ||
+		   blend == RSXKIT_BLEND_KEEP_MIN_ALPHA;
+	bool max = !own && alpha && dsta == RSXKIT_DSTA_MAX;
+	/* Factores del canal alfa en las mezclas que no traen los suyos: el del
+	 * fragmento en un destino con alfa, el del destino en uno sin alfa. */
+	u16 sa = alpha ? GCM_ONE : GCM_ZERO, da = alpha ? GCM_ZERO : GCM_ONE;
+	/* La ecuación del alfa: máximo o mínimo en las mezclas que lo piden (y
+	 * con RSXKIT_DSTA_MAX) y suma en las demás (fixed_state la deja en suma). */
+	rsxSetBlendEquation(ctx, GCM_FUNC_ADD,
+			    blend == RSXKIT_BLEND_ALPHA_MAX || max ? GCM_FUNC_MAX
+			    : (blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA || blend == RSXKIT_BLEND_KEEP_MIN_ALPHA)
+				    ? GCM_FUNC_MIN
+				    : GCM_FUNC_ADD);
 	u32 mask = GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A;
 	switch (blend) {
+	case RSXKIT_BLEND_REPLACE_MIN_ALPHA:
+	case RSXKIT_BLEND_KEEP_MIN_ALPHA:
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ZERO : GCM_ONE,
+				blend == RSXKIT_BLEND_KEEP_MIN_ALPHA ? GCM_ONE : GCM_ZERO, GCM_ONE, GCM_ONE);
+		break;
+	case RSXKIT_BLEND_ALPHA_MAX:
+		/* RGB como ALPHA; el alfa con MAX, que no mira los factores. */
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, GCM_ONE, GCM_ONE);
+		break;
 	case RSXKIT_BLEND_ALPHA:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, alpha ? GCM_ONE : GCM_ZERO,
-				alpha ? GCM_ZERO : GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, sa, da);
 		break;
 	case RSXKIT_BLEND_ADD:
 		rsxSetBlendEnable(ctx, GCM_TRUE);
-		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE, alpha ? GCM_ONE : GCM_ZERO, alpha ? GCM_ZERO : GCM_ONE);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE, sa, da);
+		break;
+	case RSXKIT_BLEND_MUL:
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, GCM_ZERO, GCM_SRC_ALPHA, sa, da);
+		break;
+	case RSXKIT_BLEND_ADD_MUL:
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, GCM_ONE, GCM_SRC_ALPHA, sa, da);
+		break;
+	case RSXKIT_BLEND_ALPHA_INV:
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, GCM_ONE_MINUS_SRC_ALPHA, GCM_SRC_ALPHA, sa, da);
+		break;
+	case RSXKIT_BLEND_ADD_ONE:
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendFunc(ctx, GCM_ONE, GCM_ONE, sa, da);
 		break;
 	case RSXKIT_BLEND_NONE:
 		rsxSetBlendEnable(ctx, GCM_FALSE);
 		mask = 0;
 		break;
 	default:
-		if (alpha && !dsta) {
+		/* Sin mezcla del color: solo el mayor necesita la mezcla. */
+		if (max) {
 			rsxSetBlendEnable(ctx, GCM_TRUE);
-			rsxSetBlendFunc(ctx, GCM_ONE, GCM_ZERO, GCM_ONE, GCM_ZERO);
+			rsxSetBlendFunc(ctx, GCM_ONE, GCM_ZERO, GCM_ONE, GCM_ONE);
 		} else {
 			rsxSetBlendEnable(ctx, GCM_FALSE);
 		}
 		break;
+	}
+	if (alpha && !own && mask) {
+		if (dsta == RSXKIT_DSTA_KEEP)
+			mask &= ~(u32)GCM_COLOR_MASK_A;
+		else if (dsta == DSTA_ALPHA_ONLY)
+			mask = GCM_COLOR_MASK_A;
 	}
 	rsxSetColorMask(ctx, mask);
 }
@@ -287,7 +411,11 @@ static void set_depth(uint8_t depth)
 	 * se probaban contra la z de cuadros viejos y desaparecían a pedazos.
 	 * La máscara de la Lente de la Verdad de Zelda (un TEXRECT que solo
 	 * escribe z) necesita lo mismo. */
-	u32 func = !(depth & RSXKIT_DEPTH_TEST) ? GCM_ALWAYS : (depth & RSXKIT_DEPTH_LESS) ? GCM_LESS : GCM_LEQUAL;
+	u32 func = !(depth & RSXKIT_DEPTH_TEST) || (depth & RSXKIT_DEPTH_ALWAYS) ? GCM_ALWAYS
+		   : (depth & RSXKIT_DEPTH_EQUAL)			       ? GCM_EQUAL
+		   : (depth & RSXKIT_DEPTH_GEQUAL)			       ? GCM_GEQUAL
+		   : (depth & RSXKIT_DEPTH_LESS)			       ? GCM_LESS
+									       : GCM_LEQUAL;
 	rsxSetDepthTestEnable(ctx, (depth & (RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_WRITE)) ? GCM_TRUE : GCM_FALSE);
 	rsxSetDepthWriteEnable(ctx, (depth & RSXKIT_DEPTH_WRITE) ? GCM_TRUE : GCM_FALSE);
 	rsxSetPolygonOffsetFillEnable(ctx, (depth & RSXKIT_DEPTH_OFFSET) ? GCM_TRUE : GCM_FALSE);
@@ -357,6 +485,7 @@ static void texture_format(uint8_t fmt, u8 *gcm, u32 *remap)
 		*remap = REMAP(GCM_TEXTURE_REMAP_COLOR_A, GCM_TEXTURE_REMAP_COLOR_R, GCM_TEXTURE_REMAP_COLOR_G,
 			       GCM_TEXTURE_REMAP_COLOR_B);
 		break;
+	case RSXKIT_ARGB8888:
 	case RSXKIT_XRGB8888:
 		*gcm = GCM_TEXTURE_FORMAT_A8R8G8B8;
 		*remap = REMAP(GCM_TEXTURE_REMAP_COLOR_A, GCM_TEXTURE_REMAP_COLOR_R, GCM_TEXTURE_REMAP_COLOR_G,
@@ -451,21 +580,27 @@ static void set_constants(const rsxkit_draw *d, const struct vprog *p)
 		if (fog_term >= 0)
 			c[C_FOGSEL + fog_term / 4][fog_term % 4] = 1.0f;
 	}
-	if (d3.c_valid && !memcmp(c, d3.c, sizeof c))
-		return;
-	memcpy(d3.c, c, sizeof c);
+	c[C_AFFINE][0] = affine_on ? 1.0f : 0.0f;
+	unsigned first = 0, end = NCONST;
+	if (d3.c_valid) {
+		while (first < end && !memcmp(c[first], d3.c[first], sizeof c[0])) first++;
+		if (first == end) return;
+		while (end > first && !memcmp(c[end-1], d3.c[end-1], sizeof c[0])) end--;
+	}
+	if (!incremental) { first = 0; end = NCONST; }
+	memcpy(d3.c + first, c + first, (end - first) * sizeof c[0]);
 	d3.c_valid = 1;
 	if (p->block) {
-		/* No rsxSetVertexProgramConstants: en PSL1GHT f649a08 avanza el
-		 * búfer de comandos dos veces (docs/rsx-notes.md). */
-		rsxLoadVertexProgramParameterBlock(ctx, p->const_start + p->consts[0]->index, NCONST, &c[0][0]);
+		/* Un tramo contiguo, con los mismos valores y registros del bloque completo. */
+		rsxLoadVertexProgramParameterBlock(ctx, p->const_start + p->consts[first]->index,
+		                                   end - first, &c[first][0]);
 	} else {
-		for (int i = 0; i < NCONST; i++)
+		for (unsigned i = first; i < end; i++)
 			rsxSetVertexProgramParameter(ctx, p->vp, p->consts[i], c[i]);
 	}
 }
 
-void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
+static void draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 {
 	struct rsxkit_state *g = &rsxkit_g;
 	gcmContextData *ctx = g->ctx;
@@ -477,9 +612,10 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 	rsxkit_logical_rect(d->scissor, sc);
 	if (sc[2] <= sc[0] || sc[3] <= sc[1])
 		return;
+	rsxkit_trace_repeat("dibujar", "%u vértices; el último desde el %u, tijeras %u,%u", count, first, sc[0], sc[1]);
 	/* Lo más que escribe un dibujo: programa de vértices (~140), constantes
 	 * (~140), programa de fragmentos (~22), texturas, estado y el dibujo. */
-	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
+	rsxkit_reserve(RSXKIT_RESERVE_DRAW + 64u);
 	if (!g->state_valid)
 		fixed_state();
 	/* prog_3d: 1 el de siempre, 2 el interpolado (las constantes de uno
@@ -494,14 +630,17 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 	/* Programa: precompilado por número de texturas, o generado para los
 	 * términos del dibujo (y cacheado). */
 	int ntex = d->ntex > 2 ? 2 : d->ntex;
-	const void *want = d3.fp[ntex];
+	/* Los precompilados: la copia afín es otro programa (su propio puntero
+	 * distingue las dos en cur_fp). */
+	const void *want = affine_on ? (const void *)&d3.fp_aff[ntex] : (const void *)d3.fp[ntex];
 	const rsxFragmentProgram *hdr = d3.fp[ntex];
-	u32 offset = d3.fp_offset[ntex];
+	u32 offset = affine_on ? d3.fp_aff_offset[ntex] : d3.fp_offset[ntex];
 	if (d->nterms) {
 		rsxkit_fp_desc desc;
 		memset(&desc, 0, sizeof desc);
 		desc.ntex = (uint8_t)ntex;
 		desc.nterms = d->nterms > RSXKIT_K_TERMS ? RSXKIT_K_TERMS : d->nterms;
+		desc.affine = (uint8_t)affine_on;
 		memcpy(desc.factors, d->factors, sizeof desc.factors);
 		const struct rsxkit_fp_cached *fc = rsxkit_fp_lookup(&desc);
 		if (!fc)
@@ -510,12 +649,25 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		hdr = &fc->hdr;
 		offset = fc->offset;
 	}
-	if (g->fp_3d < 0 || d3.cur_fp != want || d3.cur_fp_gen != rsxkit_fp_generation()) {
-		rsxLoadFragmentProgramLocation(ctx, hdr, offset, GCM_LOCATION_RSX);
-		g->fp_3d = 1;
-		d3.cur_fp = want;
-		d3.cur_fp_gen = rsxkit_fp_generation();
-		rsxkit_fp_count_load();
+	if (d->program) {
+		/* Cargar el programa solo al cambiar: recargarlo en cada dibujo
+		 * vuelve a traer el microcódigo y escribe su etiqueta de uso, una
+		 * barrera del back end por dibujo. */
+		if (program_sync_per_draw || d3.cur_program != d->program) {
+			rsxkit_3d_flush_use();
+			if (rsxkit_program_bind_3d(d->program) != RSXKIT_OK) return;
+			d3.cur_program = d->program;
+		}
+		g->fp_3d = -1;
+	} else {
+		if (d3.cur_program) { rsxkit_3d_flush_use(); d3.cur_program = NULL; }
+		if (g->fp_3d < 0 || d3.cur_fp != want || d3.cur_fp_gen != rsxkit_fp_generation()) {
+			rsxLoadFragmentProgramLocation(ctx, hdr, offset, GCM_LOCATION_RSX);
+			g->fp_3d = 1;
+			d3.cur_fp = want;
+			d3.cur_fp_gen = rsxkit_fp_generation();
+			rsxkit_fp_count_load();
+		}
 	}
 	if (!g->arrays_bound)
 		bind_arrays();
@@ -527,6 +679,21 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		set_zconst(d->depth & RSXKIT_DEPTH_CONST ? (d->z < 0.0f ? 0.0f : d->z > 1.0f ? 1.0f : d->z) : -1.0f);
 	set_cull(d->cull);
 	set_alpha(d->alpha_ref);
+	uint64_t sk = (uint64_t)d->stencil | ((uint64_t)d->stencil_ref << 8) |
+	              ((uint64_t)d->stencil_compare_mask << 16) | ((uint64_t)d->stencil_write_mask << 24) |
+	              ((uint64_t)d->stencil_op << 32) | ((uint64_t)d->stencil_zfail << 40) |
+	              ((uint64_t)d->stencil_sfail << 48);
+	if (!incremental || !d3.stencil_valid || d3.stencil_key != sk) {
+		rsxSetStencilTestEnable(ctx, d->stencil ? GCM_TRUE : GCM_FALSE);
+		if (d->stencil) {
+			rsxSetStencilMask(ctx, d->stencil_write_mask);
+			rsxSetStencilFunc(ctx, d->stencil == 2 ? GCM_NOTEQUAL : d->stencil == 3 ? GCM_EQUAL : GCM_ALWAYS, d->stencil_ref, d->stencil_compare_mask);
+			rsxSetStencilOp(ctx, d->stencil_sfail == 2 ? GCM_ZERO : d->stencil_sfail ? GCM_REPLACE : GCM_KEEP,
+			                d->stencil_zfail == 2 ? GCM_ZERO : d->stencil_zfail ? GCM_REPLACE : GCM_KEEP,
+			                d->stencil_op == 2 ? GCM_KEEP : d->stencil_op ? GCM_INVERT : GCM_REPLACE);
+		}
+		d3.stencil_key = sk; d3.stencil_valid = 1;
+	}
 	for (int i = 0; i < ntex; i++)
 		set_texture(i, &d->tex[i]);
 	set_constants(d, vp);
@@ -559,4 +726,50 @@ void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
 		rsxSetPolygonOffset(ctx, -1.0f, -2.0f);  /* el de las calcomanías (fixed_state) */
 	}
 	rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, first, count);
+	if (d->program) {
+		if (program_sync_per_draw) rsxkit_program_used_3d(d->program);
+		else d3.program_pending = 1;
+	}
+}
+
+/* Contadores de la pasada del alfa (rsxkit_dsta_stats). */
+static uint32_t dsta_passes, dsta_single, dsta_failed;
+
+void rsxkit_dsta_stats(uint32_t *passes, uint32_t *single, uint32_t *failed)
+{
+	*passes = dsta_passes;
+	*single = dsta_single;
+	*failed = dsta_failed;
+}
+
+void rsxkit_draw_triangles(const rsxkit_draw *d, uint32_t first, uint32_t count)
+{
+	bool own = d->blend == RSXKIT_BLEND_ALPHA_MAX || d->blend == RSXKIT_BLEND_REPLACE_MIN_ALPHA ||
+		   d->blend == RSXKIT_BLEND_KEEP_MIN_ALPHA || d->blend == RSXKIT_BLEND_NONE;
+	if (!count || !rsxkit_bound.target || !rsxkit_bound.alpha || d->dst_alpha != RSXKIT_DSTA_ONE || own) {
+		draw_triangles(d, first, count);
+		return;
+	}
+	/* RSXKIT_DSTA_ONE en un destino con alfa: si el alfa del fragmento ya
+	 * es 1, una pasada que lo deja tal cual; si no, primero la del alfa
+	 * (rsxkit_dsta_alpha_pass, sin escribir la profundidad: las dos ven la
+	 * misma) y después el dibujo sin tocar el alfa (RSXKIT_DSTA_KEEP;
+	 * ninguna mezcla del color lee el alfa del destino). */
+	rsxkit_draw a = *d;
+	if (rsxkit_dsta_alpha_is_one(d)) {
+		a.dst_alpha = RSXKIT_DSTA_FRAG;
+		dsta_single++;
+		draw_triangles(&a, first, count);
+		return;
+	}
+	rsxkit_draw b;
+	if (rsxkit_dsta_alpha_pass(d, &b)) {
+		draw_triangles(&b, first, count);
+		dsta_passes++;
+		a.dst_alpha = RSXKIT_DSTA_KEEP;
+	} else {
+		a.dst_alpha = RSXKIT_DSTA_FRAG;  /* lo que se puede: el del fragmento */
+		dsta_failed++;
+	}
+	draw_triangles(&a, first, count);
 }

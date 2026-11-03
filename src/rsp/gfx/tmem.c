@@ -70,6 +70,17 @@ static void put32(uint8_t *tmem, uint32_t idx, const uint8_t *src)
 	memcpy(tmem + 0x800 + idx * 2, src + 2, 2);
 }
 
+/* YUV16 entra como U,Y0,V,Y1: la crominancia va a los 2 KB bajos y
+ * la luminancia a los altos. La línea de la tile cuenta bytes por plano. */
+static void put_yuv(uint8_t *tmem, uint32_t dst, uint32_t odd, const uint8_t *src, uint32_t bytes)
+{
+	for (uint32_t x = 0; x < bytes / 2; x++) {
+		uint32_t a = ((dst + x) ^ odd) & 0x7FF;
+		tmem[a] = src[2 * x];
+		tmem[a + 0x800] = src[2 * x + 1];
+	}
+}
+
 /* Anota una carga: el tramo [tmem, tmem + bytes) de la TMEM vino de `addr`
  * en filas de `line` bytes, de una imagen con `row_bytes` por fila. */
 #ifdef SALSA64_GFX_TRACE
@@ -168,6 +179,11 @@ void gfx_load_block(struct gfx_state *g, uint32_t w0, uint32_t w1)
 	}
 	/* Los texels van seguidos: línea 0 (la tile que lea decide las filas). */
 	note_load(g, t->tmem, bytes, 0, src, 0);
+	if (t->fmt == G_IM_FMT_YUV) {
+		for (uint32_t k = 0; k < bytes / 8; k++)
+			put_yuv(g->tmem, t->tmem + 4 * k, ((k * dxt) >> 11) & 1 ? 4 : 0, p + 8 * k, 8);
+		return;
+	}
 	if (g->timg_siz == G_IM_SIZ_32b) {
 		uint32_t base = t->tmem / 2;
 		for (uint32_t k = 0; k < bytes / 8; k++) {
@@ -211,6 +227,10 @@ void gfx_load_tile(struct gfx_state *g, uint32_t w0, uint32_t w1)
 		if (!p) {
 			g->res->dl_errors++;
 			return;
+		}
+		if (t->fmt == G_IM_FMT_YUV) {
+			put_yuv(g->tmem, t->tmem + r * t->line, (r & 1) ? 4 : 0, p, row_bytes);
+			continue;
 		}
 		if (g->timg_siz == G_IM_SIZ_32b) {
 			uint32_t base = t->tmem / 2 + r * (t->line / 2);
@@ -310,6 +330,33 @@ static uint32_t tlut(const struct gfx_state *g, uint32_t index, unsigned type)
 	return type == G_TT_IA16 ? ia16(p) : rgba16(p);
 }
 
+static uint32_t color8(int32_t v)
+{
+	return v < 0 ? 0 : v > 255 ? 255 : (uint32_t)v;
+}
+
+/* El filtro usa los coeficientes de nueve bits con signo de SETCONVERT,
+ * con un bit fraccionario bajo implícito. K4/K5 los aplica el combiner
+ * después; aplicarlos aquí también daría la conversión dos veces. */
+static int32_t yuv_k(uint16_t k)
+{
+	return 2 * (((int32_t)k ^ 256) - 256) + 1;
+}
+
+static uint32_t yuv16(const struct gfx_state *g, uint32_t row, uint32_t odd, uint32_t x)
+{
+	if (g->job->flags & GFX_JOB_NO_YUV)
+		return 0x000000FF;
+	uint32_t a = ((row + x) ^ odd) & 0x7FF;
+	int32_t y = g->tmem[a + 0x800];
+	int32_t u = (int32_t)g->tmem[a & ~1u] - 128;
+	int32_t v = (int32_t)g->tmem[a | 1u] - 128;
+	int32_t r = y + ((yuv_k(g->k0) * v + 128) >> 8);
+	int32_t b = y + ((yuv_k(g->k3) * u + 128) >> 8);
+	int32_t green = y + ((yuv_k(g->k1) * u + yuv_k(g->k2) * v + 128) >> 8);
+	return color8(r) << 24 | color8(green) << 16 | color8(b) << 8 | (uint32_t)y;
+}
+
 /* Texel (x, y) de la tile en RGBA8888 (0xRRGGBBAA). */
 static uint32_t texel(const struct gfx_state *g, const struct gfx_tile *t, uint32_t x, uint32_t y, unsigned tt)
 {
@@ -347,7 +394,7 @@ static uint32_t texel(const struct gfx_state *g, const struct gfx_tile *t, uint3
 		if (t->fmt == G_IM_FMT_IA || t->fmt == G_IM_FMT_I)
 			return ia16(p);
 		if (t->fmt == G_IM_FMT_YUV)
-			return 0x000000FF;
+			return yuv16(g, row, odd, x);
 		return rgba16(p);
 	}
 	default: {
@@ -395,16 +442,20 @@ static void tile_key(const struct gfx_state *g, const struct gfx_tile *t, uint32
 		       (uint32_t)t->line << 16 | (t->tmem & 15), w << 16 | h, 1u | masks << 8 | (uint32_t)premul << 31);
 	/* texel() lee por fila 8 bytes enteros (la fila impar intercambia
 	 * mitades dentro de cada palabra) y solo 256 filas distintas. */
-	uint32_t row = t->siz == G_IM_SIZ_4b ? (w + 1) / 2 : t->siz == G_IM_SIZ_8b ? w : 2 * w;
+	bool yuv = t->fmt == G_IM_FMT_YUV && t->siz == G_IM_SIZ_16b;
+	uint32_t row = t->siz == G_IM_SIZ_4b ? (w + 1) / 2 : t->siz == G_IM_SIZ_8b || yuv ? w : 2 * w;
 	uint32_t rows = h < 256 ? h : 256;
 	uint32_t len = (rows - 1) * t->line + ((row + 7) & ~7u);
-	if (t->siz == G_IM_SIZ_32b) {
+	if (t->siz == G_IM_SIZ_32b || yuv) {
 		/* R y G en la mitad baja, B y A en la alta, en el mismo lugar. */
 		gfx_hash_ring(&hs, g->tmem, 0x800, t->tmem, len);
 		gfx_hash_ring(&hs, g->tmem + 0x800, 0x800, t->tmem, len);
 	} else {
 		gfx_hash_ring(&hs, g->tmem, 4096, t->tmem, len);
 	}
+	if (yuv)
+		gfx_hash_words(&hs, (uint32_t)g->k0 << 16 | g->k1, (uint32_t)g->k2 << 16 | g->k3,
+			       g->job->flags & GFX_JOB_NO_YUV, 0);
 	if (tt != G_TT_NONE) {
 		/* Paleta: el banco de la tile (4 bits) o toda (8 bits). */
 		if (t->siz == G_IM_SIZ_4b)

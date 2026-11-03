@@ -30,10 +30,12 @@
 
 #include "audio_sync.h"
 #include "core/n64.h"
+#include "rsp/audio/audio.h"
 
 /* Arranca la HLE de audio y la salida y conecta el AI. Devuelve 0 si la
- * salida quedó andando (sin ella, la HLE y el AI siguen igual). */
-int audio_out_init(struct salsa64_n64 *n64, bool old_ranges);
+ * salida quedó andando (sin ella, la HLE y el AI siguen igual). `job_flags`:
+ * AUD_JOB_* (audio.h) que llevan todas las tareas. */
+int audio_out_init(struct salsa64_n64 *n64, uint32_t job_flags);
 /* Una vez por campo, desde el hilo principal: estadísticas al log cada 5 s. */
 void audio_out_field(uint64_t now_us);
 void audio_out_shutdown(void);

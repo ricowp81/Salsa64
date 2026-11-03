@@ -63,9 +63,14 @@ Full guide (in Spanish): [docs/uso-ps3.md](docs/uso-ps3.md).
    always the newest version) and install it with the XMB Package Manager
    (HEN or CFW). It shows up as "Salsa64" under Games.
 2. Copy your own ROM dumps (`.z64`, `.v64` or `.n64`, any byte order; ROMs
-   over 64 MB, such as hacks, are read from the disk in pages) or standard `.zip` archives containing one of those formats to
+   over 64 MB, such as hacks, are read from the disk in pages) or standard `.zip`, `.rar` or `.7z` archives containing one of those formats to
    `/dev_hdd0/salsa64` (for example over webMAN MOD's FTP) or to a `salsa64`
    folder at the root of a FAT32 USB stick.
+
+   RAR and 7z archives must be single-volume and unencrypted. Encrypted 7z
+   headers, password-protected members and multi-volume RAR sets are not
+   supported. A 7z solid block and the preceding data in a solid RAR archive
+   are limited to 64 MiB.
 3. Start Salsa64 and pick a game from the menu.
 
 | N64 | DualShock 3 |
@@ -99,6 +104,10 @@ Full guide (in Spanish): [docs/uso-ps3.md](docs/uso-ps3.md).
 - Optional text files in `/dev_hdd0/salsa64` change the button mapping
   (`controles.cfg`), the save type per game (`guardado.cfg`), audio
   (`audio.cfg`) and overscan cropping (`overscan.cfg`); see the guide.
+- **RetroAchievements** (off by default, Options). Regular achievements work.
+  Salsa64's Hardcore mode is **not yet approved by RetroAchievements**: approval
+  requires 6 public months and will be requested in April 2027.
+  See `docs/retroachievements.md`.
 
 ## Reporting problems and compatibility
 

@@ -30,6 +30,12 @@ void salsa64_gfx_job(struct gfx_job *job, const struct salsa64_bus *bus, const s
 		     enum salsa64_gbi gbi);
 /* Lo que `finish` devuelve al núcleo por un resultado (SALSA64_GFX_*). */
 uint32_t salsa64_gfx_task_flags(const struct gfx_result *res);
+/* Ritmo del RCP (gfx_model en rcp.h, docs/ritmo-rcp.md): cuántos ciclos del
+ * VR4300 tardaría la consola en una tarea con este resultado de la HLE,
+ * estimado con sus comandos, triángulos y vértices según la familia del
+ * microcódigo y calibrado con lo que tarda el microcódigo real en ares; 0 si
+ * no se midió. */
+uint32_t salsa64_gfx_model_cycles(const struct gfx_result *res, enum salsa64_gbi gbi);
 /* Al terminar la tarea (en `finish`, en el hilo del CPU): los rellenos de
  * la z image de su salida (GFX_OP_ZCLEAR) se escriben en la RDRAM, como los
  * deja el RDP. El CPU puede leerla: Donkey Kong 64 mira la profundidad

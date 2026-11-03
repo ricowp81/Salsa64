@@ -164,9 +164,10 @@ static void dump_files(const struct salsa64_n64 *n64, const char *dir, uint32_t 
 	    field, ok ? "bien" : "FALLO");
 }
 
-void cuelgue_reset(struct cuelgue *c)
+void cuelgue_reset(struct cuelgue *c, bool always)
 {
 	memset(c, 0, sizeof *c);
+	c->always = always;
 }
 
 bool cuelgue_watch(struct cuelgue *c, const struct salsa64_n64 *n64, uint64_t now_us, bool expect,
@@ -199,8 +200,9 @@ bool cuelgue_watch(struct cuelgue *c, const struct salsa64_n64 *n64, uint64_t no
 		return false;
 	}
 	/* Un juego que nunca dio señales de vida (un menú del juego, una pantalla fija desde el arranque) no
-	 * cuenta como colgado: tiene que haber estado leyendo o dibujando antes. */
-	if (c->said || c->active < 6 || now_us - c->t_change < CUELGUE_US)
+	 * cuenta como colgado: tiene que haber estado leyendo o dibujando antes; salvo con latido-siempre,
+	 * para ver dónde se queda un juego que no arranca. */
+	if (c->said || (c->active < 6 && !c->always) || now_us - c->t_change < CUELGUE_US)
 		return false;
 	c->said = true;
 

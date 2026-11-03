@@ -37,16 +37,30 @@ sin respuesta se cancela a los 40 s con aviso. Cada paso queda en el log
 
 ## Hardcore
 
+> **Estado:** el Hardcore de Salsa64 **todavía no está aprobado por
+> RetroAchievements**. La aprobación exige que el emulador lleve 6 meses
+> públicos y se pedirá en abril de 2027. Mientras tanto los logros normales
+> funcionan; los de Hardcore se mandan al sitio, pero el emulador no figura en
+> su lista de aprobados.
+
 **Opciones > Hardcore** (apagado por omisión). Vale para el siguiente juego que
-se abra y solo mientras ese juego tenga logros cargados. Con Hardcore:
+se abra y solo mientras ese juego tenga logros cargados. Las reglas
+(`src/frontend/ra_rules.c`, con pruebas en `tests/unit/test_ra.c`) siguen los
+[requisitos de RetroAchievements](https://docs.retroachievements.org/general/hardcore-compliance-requirements.html):
 
-- no se guardan ni se cargan **estados** (ni con SELECT + R1/L1 ni desde la
-  pausa) y la lista de **trucos** desaparece y no se aplica;
-- los logros y las tablas de clasificación se mandan como *hardcore* (`h=1`);
-- el aviso «RA Hardcore: sin estados ni trucos» sale al abrir el juego.
+| Requisito | En Salsa64 |
+|---|---|
+| Cargar estados guardados | Bloqueado en todos los caminos (menú de pausa, SELECT + L1, prueba automática `estados-prueba`: todos pasan por `state_command`). Guardar un estado sí se permite, como dice el requisito. |
+| Rebobinar, cámara lenta, cuadro a cuadro | No existen. El ritmo es el de la tele emulada; el único cambio es `turbo` (archivo de diagnóstico), que es adelanto rápido y se permite. |
+| Trucos | No se muestran ni se aplican (pausa, panel y `cheats_apply`). No hay lector de memoria, depurador, ni repetición de entradas en el frontend; `replay` repite volcados gráficos, sin juego. |
+| Pasar a Hardcore a mitad de juego | No vale: el juego abierto sigue como estaba y el ajuste se aplica al abrir el siguiente (queda en el log). Dejar Hardcore a mitad de juego sí vale al instante. En la práctica Opciones solo se abre desde la lista de juegos. |
+| Reanudar una sesión | No hay reanudación automática de partidas: cada juego abre en limpio. |
+| User agent | Propio: `Salsa64/<versión> rcheevos/12.5` (nombre y versión numérica; nunca otro cliente). |
 
-Reiniciar con el botón Reset y las imágenes (filtros, escala, interpolación)
-siguen permitidas. Salsa64 no tiene cámara lenta.
+Además: los logros y las tablas de clasificación se mandan como *hardcore*
+(`h=1`), y el aviso «RA Hardcore: sin cargar estados ni trucos» sale al abrir el juego.
+Reiniciar con el botón Reset y los ajustes de imagen (filtros, escala,
+interpolación, aspecto) siguen permitidos: no alteran el juego.
 
 ## Archivos
 

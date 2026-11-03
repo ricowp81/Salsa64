@@ -784,6 +784,9 @@ void aud_run(struct aud_state *st, const struct aud_job *job, struct aud_result 
 	}
 	if (t.abi1)
 		memset(st->abi1.segments, 0, sizeof st->abi1.segments);
+	/* La zona de estados del microcódigo de ABI1 (audio.h): de ahí toma POLEF con A_INIT las
+	 * muestras previas. 0xF90 en las tres compilaciones (medido con el microcódigo real). */
+	st->scratch = t.abi1 && !(job->flags & AUD_JOB_POLEF_INIT_ZERO) ? 0xF90 : 0;
 	st->nead.vco3 = false;  /* el microcódigo real arranca con VCO a cero (ver alist_add) */
 	st->naudio.mp3_addr = 0;  /* MP3ADDY: se pierde con la cabecera de la tarea */
 #ifdef AUD_DEBUG

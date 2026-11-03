@@ -220,6 +220,24 @@ static uint32_t row_bytes(uint32_t width, unsigned siz)
 	return (b + 7) & ~7u;
 }
 
+/* Paso entre filas de la imagen en la RDRAM, en texels de la carga (lsiz):
+ * el microcódigo lo saca de imageW en palabras de 64 bits, redondeando hacia
+ * abajo (imageW >> (6 − siz) en u10.2; lo mismo que guS2DInitBg deja en
+ * tmemSizeW). Worms Armageddon declara imageW = 321 con filas de 320 bytes
+ * (CI8): el microcódigo real pide SETTIMG de 160 texels de 16 bits y lee 330
+ * bytes desde cada fila, así que la columna 321 es la primera de la fila
+ * siguiente. Con el paso de 321 cada fila se corría un texel más que la
+ * anterior y la imagen entera salía inclinada (#57).
+ * GFX_JOB_S2DEX_BG_ROW_OLD vuelve al paso de imageW texels. */
+static uint32_t bg_stride(const struct gfx_state *g, const struct bg *b, unsigned lsiz, uint32_t lw)
+{
+	if (g->job && (g->job->flags & GFX_JOB_S2DEX_BG_ROW_OLD))
+		return lw;
+	uint32_t bytes = (b->siz == G_IM_SIZ_4b ? b->image_w / 2 : b->image_w << (b->siz - 1)) & ~7u;
+	uint32_t texels = bytes >> (lsiz - 1);
+	return texels ? texels : lw;
+}
+
 /* Carga las filas [ty, ty + n) de la imagen a la TMEM y deja la tile de
  * dibujo apuntándolas (s de 0 a image_w − 1, t de ty a ty + n − 1). */
 static void load_rows(struct gfx_state *g, const struct bg *b, uint32_t ty, uint32_t n)
@@ -228,7 +246,7 @@ static void load_rows(struct gfx_state *g, const struct bg *b, uint32_t ty, uint
 	unsigned lsiz = b->siz == G_IM_SIZ_4b ? G_IM_SIZ_8b : b->siz;
 	uint32_t lw = b->siz == G_IM_SIZ_4b ? (b->image_w + 1) / 2 : b->image_w;
 	uint32_t line = row_bytes(b->image_w, b->siz) / 8;
-	gfx_rdp_command(g, 0xFDu << 24 | b->fmt << 21 | lsiz << 19 | (lw - 1), b->ptr);
+	gfx_rdp_command(g, 0xFDu << 24 | b->fmt << 21 | lsiz << 19 | (bg_stride(g, b, lsiz, lw) - 1), b->ptr);
 	gfx_rdp_command(g, 0xF5u << 24 | b->fmt << 21 | lsiz << 19 | line << 9, (uint32_t)BG_LOAD_TILE << 24);
 	gfx_rdp_command(g, 0xF4u << 24 | (ty << 2), (uint32_t)BG_LOAD_TILE << 24 | (lw - 1) << 14 | (ty + n - 1) << 2);
 	/* Dibujo: límites sin repetir (G_TX_CLAMP en s y t). */
@@ -263,6 +281,21 @@ static void bg_draw(struct gfx_state *g, uint32_t seg, bool scaled)
 	struct bg b;
 	if (!read_bg(g, seg, scaled, &b))
 		return;
+	/* BG_1CYC limita un marco mayor que la imagen escalada: el módulo
+	 * siguiente solo sirve para el origen desplazado, no para dibujar
+	 * copias completas de más. El RSP reserva el borde final en cuartos
+	 * de píxel. BG_COPY sí conserva el marco de la copia sin esta cota.
+	 * Los marcos que ya caben mantienen su recorrido y redondeo. */
+	if (scaled && !(g->job->flags & GFX_JOB_S2DEX_BG_OLD)) {
+		if (b.frame_w * b.scale_w > (b.image_w << 10)) {
+			uint32_t q = (b.image_w << 12) / b.scale_w;
+			b.frame_w = q ? (q - 1) >> 2 : 0;
+		}
+		if (b.frame_h * b.scale_h > (b.image_h << 10)) {
+			uint32_t q = (b.image_h << 12) / b.scale_h;
+			b.frame_h = q ? (q - 1) >> 2 : 0;
+		}
+	}
 	unsigned cycle = (g->oh >> G_MDSFT_CYCLETYPE) & 3;
 	bool copy = cycle == G_CYC_COPY;
 	/* Con paleta, la mitad alta de la TMEM es de la paleta. */

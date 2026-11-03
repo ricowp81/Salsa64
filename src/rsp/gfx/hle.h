@@ -284,6 +284,7 @@ struct gfx_state {
 	uint8_t prim_lod, prim_min;
 	uint16_t prim_z, prim_dz;
 	uint16_t k4, k5;           /* G_SETCONVERT: 9 bits con signo */
+	uint16_t k0, k1, k2, k3;   /* matriz YUV del filtro de texturas */
 	uint16_t scissor[4];       /* 10.2 */
 	uint32_t cimg_addr;
 	uint16_t cimg_width;
@@ -648,6 +649,10 @@ static inline uint32_t gfx_addr(const struct gfx_state *g, uint32_t seg)
 #define IM_RD            0x0040u
 #define CLR_ON_CVG       0x0080u
 #define CVG_DST_MASK     0x0300u
+#define CVG_DST_CLAMP    0x0000u
+#define CVG_DST_WRAP     0x0100u
+#define CVG_DST_FULL     0x0200u  /* «ZAP»: 7 */
+#define CVG_DST_SAVE     0x0300u
 #define ZMODE_MASK       0x0C00u
 #define ZMODE_OPA        0x0000u
 #define ZMODE_INTER      0x0400u

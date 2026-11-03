@@ -1,8 +1,0 @@
-/* SPDX-License-Identifier: MIT */
-/* rsxkit — fragment program del blit hacia destinos con alfa: la textura
- * con su alfa (rsxkit_blit.fcg la lleva siempre a 1). */
-void main(float2 texcoord : TEXCOORD0, uniform sampler2D texture : TEXUNIT0,
-          out float4 color : COLOR)
-{
-	color = tex2D(texture, texcoord);
-}

@@ -41,7 +41,7 @@ static void page_normalize(uint8_t *p, size_t n, unsigned fmt)
 }
 
 /* ---- Hilo lector: PSL1GHT en la consola, pthread en el host y las pruebas ---- */
-#ifdef __PPU__
+#ifdef __lv2ppu__  /* PSL1GHT; el gcc de Linux ppc64 también define __PPU__ con -mcpu=cell */
 #include <ppu-lv2.h>
 #include <sys/cond.h>
 #include <sys/mutex.h>

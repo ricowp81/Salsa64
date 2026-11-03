@@ -232,6 +232,81 @@ constantes repetidas) sigue por debajo del milisegundo por macrobloque.
 - Los resultados de cada comprobación (host, ROMs de prueba, recompilador,
   compilación de todos los programas) están en el informe del trabajo.
 
+## POLEF de ABI1 con A_INIT (2026-10-29)
+
+Punto de partida: una ronda anterior midió «624 de 624 tareas distintas» en
+Donald Duck: Quack Attack (ABI1, el sintetizador de libultra con
+reverberación) y lo atribuyó a estados de RESAMPLE/ADPCM sin guardar y a
+salidas corridas 2 bytes. Era el oráculo: ese host estaba compilado con los 10
+tramos de spukit (`AUD_MAX_RANGES`) y este motor escribe ~30 tramos por tarea
+(un SAVEBUFF y un estado por voz y por etapa del eco), así que los tramos se
+juntaban por el hueco menor y la comparación incluía huecos que el CPU del
+juego escribe mientras la tarea corre. Con `-DAUD_MAX_RANGES=1024` (lo que
+exige docs/rsp-lle.md), la misma ROM da **1 de 3855** tareas distintas desde el
+arranque (Europa) y 1 de 3852 (USA), y **0 de 2203** desde un estado guardado
+dentro del juego; con 10 tramos, 1302 de 1649. Los SETBUFF a direcciones
+impares de la DMEM (entrada 0x001, 0x004, 0x142…) son los de libultra
+(`alLoadBuffer` carga alineado a 8 y ajusta la entrada) y la HLE ya los hacía
+bien; los estados sí se guardan.
+
+La tarea que faltaba se bisecó al **POLEF con A_INIT** (`0e01xxxx`). Con los
+datos crudos del hijo de la bisección (DMEM y RDRAM de los dos lados antes y
+después del comando, y `SALSA64_LLE_POKE` para cambiar la tabla y los
+comandos vecinos sin volver a correr el juego):
+
+- La salida real es la del filtro de dos polos con l2 = −57 (0xFFC7) y, con
+  h1[0] ≠ 0, l1 = 0x0012: exactamente las muestras 3.ª y 4.ª del estado que el
+  RESAMPLE anterior de la misma cadena de eco dejó en la zona de estados del
+  microcódigo (DMEM 0xF90–0xF99: 4 muestras y el acumulador). Un MIXER
+  intercalado antes del POLEF (que pisa los registros vectoriales) no cambia
+  nada: el valor viene de la DMEM, no de un registro. mupen64plus-rsp-hle
+  parte de l1 = l2 = 0 con A_INIT.
+- La misma zona la escriben el RESAMPLE (10 bytes) y el ENVMIXER (sus 80 bytes
+  de estado, el final: los carriles 2 y 3 del volumen izquierdo quedan en +4 y
+  +6) en las tres compilaciones de ABI1 (la estándar, la de GoldenEye y la de
+  Blast Corps/Diddy Kong Racing, medidas); el ADPCM, los MIXER, LOADBUFF,
+  SAVEBUFF, SETBUFF y LOADADPCM no la tocan. El POLEF pone a cero los 4
+  primeros bytes (con y sin A_INIT) y no deja ahí su estado.
+- Es también la tarea que quedaba en Diddy Kong Racing: su primer POLEF (A_INIT,
+  la primera tarea de audio del juego) lee la DMEM recién encendida, 0xFFFF, y
+  como `>> 14` redondea hacia abajo, un −1 en el estado se sostiene: 712
+  muestras a −1 contra 0.
+
+La HLE lleva ahora esa zona en su propia DMEM (`aud_state.scratch`, 0xF90 en
+ABI1): RESAMPLE y ENVMIXER dejan ahí su estado final y POLEF con A_INIT toma
+l1 y l2 de +4 y +6 y pone a cero los 4 primeros bytes. Como la DMEM de la HLE
+persiste entre tareas, vale también entre tareas (en la consola real una tarea
+gráfica intermedia pisa esa zona con lo suyo: ahí no hay valor «correcto» que
+reproducir). Interruptor para volver a lo anterior: `audio-polef-cero` en
+`/dev_hdd0/salsa64/` (en el host, `SALSA64_AUDIO_POLEF_ZERO=1`), que es lo que
+mide la columna «antes».
+
+Censo con el mismo oráculo (host con `-DAUD_MAX_RANGES=1024`, 3 × 10⁹ ciclos,
+~32 s de consola, pulsaciones programadas; «antes» = con `audio-polef-cero`):
+
+| Juego | Variante (ABI) | Tareas | Distintas antes | Distintas después |
+|---|---|---:|---:|---:|
+| Donald Duck: Quack Attack (Europa) | ABI1 | 3 855 | 1 | 0 |
+| Donald Duck: Goin' Quackers (USA) | ABI1 | 3 852 | 1 | 0 |
+| Diddy Kong Racing (USA, rev 1) | ABI1 (Blast Corps) | 956 | 1 | 0 |
+| GoldenEye 007 (USA) | ABI1 (GoldenEye) | 941 | 0 | 0 |
+| Super Mario 64 (USA) | ABI1 | 1 895 | 0 | 0 |
+| Wave Race 64 (USA) | ABI1 | 1 898 | 0 | 0 |
+| Mario Kart 64 (USA) | nead (Mario Kart 64) | 1 895 | 0 | 0 |
+| Star Fox 64 (USA, rev 1) | nead (Star Fox 64) | 1 718 | 3 | 3 |
+| Zelda: Ocarina of Time (rev B) | nead (Zelda OoT) | 1 665 | 0 | 0 |
+
+Las 3 de Star Fox 64 son las carreras con el CPU de siempre (1 a 4 bytes a
++13 de un tramo, iguales antes y después); los nead y naudio no tocan la zona
+(`scratch` = 0 fuera de ABI1). Donald Duck (Europa) desde el estado guardado
+del informe #16, dentro del juego: 2203 tareas, 0 distintas.
+
+Costo en el SPE 1: por RESAMPLE 5 escrituras de 16 bits al local store, por
+ENVMIXER una copia de 80 bytes y por POLEF dos lecturas y una escritura de 4
+bytes; sin DMA nuevos ni reservas. Local store del SPE 1 (`spu-size`): text
+62 824 → 63 472 (+648), data 800 y bss 35 088 sin cambio; ~162,6 KB libres
+para la pila.
+
 ## Qué conviene escuchar en la PS3
 
 Conker (música y efectos), Perfect Dark y Banjo-Tooie (música con MP3), Majora's

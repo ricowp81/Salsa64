@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Salsa64 — RetroAchievements en la PS3; ver ra.h. */
 #include "ra.h"
+#include "ra_rules.h"
 
 #include <ppu-lv2.h>
 #include <stdio.h>
@@ -669,7 +670,18 @@ void ra_apply(bool enabled, bool hardcore)
 	bool was = ra.enabled;
 	ra.enabled = enabled;
 	ra.hardcore = hardcore;
-	ra_core_set_hardcore(ra.core, hardcore);
+	/* Con un juego abierto, Hardcore no se activa sin reiniciarlo (queda para
+	 * el siguiente juego); desactivarlo sí vale al instante. */
+	bool deferred;
+	bool mode = ra_rules_mode_change(ra.active, ra.game_hardcore, hardcore, &deferred);
+	if (ra.active) {
+		ra.game_hardcore = mode;
+		if (deferred)
+			salsa64_log("RA: Hardcore pedido con un juego abierto; vale desde el siguiente");
+		ra_core_set_hardcore(ra.core, mode);
+	} else {
+		ra_core_set_hardcore(ra.core, hardcore);
+	}
 	if (enabled && (!was || !ra.tried_token) && ra.user[0] && ra.token[0] && ra_core_login_state(ra.core) == RA_LOGGED_OUT) {
 		ra.tried_token = true;
 		salsa64_log("RA: iniciando sesión con el token guardado");

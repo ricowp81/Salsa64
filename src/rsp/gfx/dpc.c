@@ -59,8 +59,15 @@ void gfx_dl_dpc(struct gfx_state *g)
 		g->res->commands++;
 		uint32_t op = w[0] >> 24;
 #ifdef GFX_CENSUS
-		if (gfx_dpc_trace)
-			fprintf(stderr, "dpc:   %06x op %02x %08x %08x%s\n", pc - 8 * (op >= 0xC8 && op <= 0xCF ? gfx_rdp_raw_words(op) : (op == G_TEXRECT || op == G_TEXRECTFLIP) ? 2u : 1u), op, w[0], w[1], op >= 0xC8 && op <= 0xCF ? " (tri)" : "");
+		if (gfx_dpc_trace) {
+			fprintf(stderr, "dpc:   %06x op %02x %08x %08x%s", pc - 8 * (op >= 0xC8 && op <= 0xCF ? gfx_rdp_raw_words(op) : (op == G_TEXRECT || op == G_TEXRECTFLIP) ? 2u : 1u), op, w[0], w[1], op >= 0xC8 && op <= 0xCF ? " (tri)" : "");
+			/* Un triángulo entero (aristas y bloques de sombra, textura y z): para
+			 * reconstruir sus vértices y atributos fuera (build/, Python). */
+			if (op >= 0xC8 && op <= 0xCF)
+				for (unsigned k = 2; k < 2 * words; k++)
+					fprintf(stderr, " %08x", w[k]);
+			fputc('\n', stderr);
+		}
 		gfx_dpc_hist[op & 63]++;
 #endif
 		if (op >= 0xC8 && op <= 0xCF)

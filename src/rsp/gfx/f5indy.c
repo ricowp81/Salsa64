@@ -47,6 +47,10 @@
  * de local store en src/spu/gfx/main.c.
  */
 #include <string.h>
+#ifdef GFX_CENSUS
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 
 #include "core/endian.h"
 #include "core/rcp.h"
@@ -672,7 +676,17 @@ static bool state_cmd(struct gfx_state *g, uint32_t w0, uint32_t w1)
 
 
 /* La lista secundaria (la dirección que dejó un G_MOVEWORD en 0x58C): antes de
- * dibujar, el microcódigo corre sus comandos hasta el B8 000000 FFFFFFFF. */
+ * dibujar, el microcódigo corre sus comandos hasta el B8 000000 FFFFFFFF.
+ *
+ * Indiana Jones también deja en 0x58C listas que terminan con un B8 000000
+ * 00000000 (las de un objeto: un triángulo y su fin, 2026-10-29). Siguiendo
+ * hasta el B8 … FFFFFFFF, la HLE seguía más allá del fin por los vértices de
+ * 8 bytes que hay detrás y ejecutaba como comandos del RDP los que empiezan
+ * con 0xC0 o más: un vértice (−80, 17, 136) es «FFB00011 00880000», un
+ * G_SETCIMG de 18 de ancho en 0x880000; otro, un G_SETZIMG en 0x820000. Los
+ * dibujos de Indy iban a esa imagen (invisible) y el estado quedaba revuelto
+ * (media pantalla negra). Ahora cualquier G_ENDDL cierra la lista;
+ * GFX_JOB_F5_SUB_OLD (f5-sublista-vieja) vuelve a lo de antes. */
 static void do_sub_dlist(struct gfx_state *g)
 {
 	const uint32_t addr = dw(0x58C) & 0x00FFFFFF;
@@ -681,6 +695,12 @@ static void do_sub_dlist(struct gfx_state *g)
 	f5.insub = true;
 	const uint32_t save = g->dl_pc;
 	uint32_t pc = addr + 8;
+#ifdef GFX_CENSUS
+	static int trace = -1;
+	if (trace < 0)
+		trace = getenv("SALSA64_F5_SUB_TRACE") != NULL;
+	bool past = false;
+#endif
 	for (;;) {
 		uint32_t w0, w1, n0, n1;
 		if (g->res->commands >= GFX_MAX_COMMANDS || !gfx_io_dl(g, pc, &w0, &w1)) {
@@ -689,6 +709,20 @@ static void do_sub_dlist(struct gfx_state *g)
 		}
 		if (w0 == 0xB8000000u && w1 == 0xFFFFFFFFu)
 			break;
+		if ((w0 >> 24) == 0xB8) {
+			g->res->flags |= GFX_RES_F5_SUB_END;
+			if (!(g->job->flags & GFX_JOB_F5_SUB_OLD))
+				break;
+#ifdef GFX_CENSUS
+			if (trace)
+				fprintf(stderr, "f5 sublista %06x: B8 %08x en %06x; sigue (f5-sublista-vieja)\n", addr, w1, pc);
+			past = true;
+#endif
+		}
+#ifdef GFX_CENSUS
+		if (trace && past && (w0 >> 24) >= 0xC0)
+			fprintf(stderr, "f5 sublista %06x: más allá del fin, %06x: %08x %08x\n", addr, pc, w0, w1);
+#endif
 		g->res->commands++;
 		const bool next_bd = gfx_io_dl(g, pc + 8, &n0, &n1) && (n0 >> 24) == 0xBD;
 		g->dl_pc = pc + 8;
@@ -700,6 +734,10 @@ static void do_sub_dlist(struct gfx_state *g)
 			break;
 		}
 	}
+#ifdef GFX_CENSUS
+	if (trace)
+		fprintf(stderr, "f5 sublista %06x: hasta %06x\n", addr, pc);
+#endif
 	g->dl_pc = save;
 	dw_set(0x58C, 0);
 	f5.insub = false;

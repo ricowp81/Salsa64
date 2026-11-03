@@ -1,5 +1,10 @@
 # Estados guardados (save states)
 
+Al cerrar un juego se espera y detiene el escritor antes de liberar la foto
+(8 MiB de RDRAM + 1 MiB de secciones). Si vence el plazo, la foto se conserva
+hasta que termine la escritura. `memoria-estados-vieja` en la carpeta de datos
+restaura la retención entre juegos para comparar el consumo en la PS3.
+
 Toda la máquina en un archivo, para seguir exactamente desde ahí. Diez
 ranuras por juego en la PS3; en el host, `salsa64-run --state-save` y
 `--state-load`. Decidido y hecho el 2026-10-11.

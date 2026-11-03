@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "frontend/ra_rules.h"
+
 #include "frontend/ra_core.h"
 #include "test.h"
 
@@ -409,6 +411,43 @@ static void two_keyboards(void)
 	ra_core_destroy(c);
 }
 
+/* Reglas de Hardcore (ra_rules.c). */
+static void rules_hardcore(void)
+{
+	/* Con Hardcore: nada de cargar estados, trucos, rebobinar, cámara lenta ni
+	 * cuadro a cuadro; guardar, adelanto rápido y gráficos valen. */
+	CHECK(!ra_rules_allowed(true, RA_RULE_STATE_LOAD));
+	CHECK(!ra_rules_allowed(true, RA_RULE_CHEATS));
+	CHECK(!ra_rules_allowed(true, RA_RULE_REWIND));
+	CHECK(!ra_rules_allowed(true, RA_RULE_SLOWMO));
+	CHECK(!ra_rules_allowed(true, RA_RULE_FRAME_STEP));
+	CHECK(!ra_rules_allowed(true, RA_RULE_ACTIONS));  /* lo desconocido, no */
+	CHECK(ra_rules_allowed(true, RA_RULE_STATE_SAVE));
+	CHECK(ra_rules_allowed(true, RA_RULE_FAST_FORWARD));
+	CHECK(ra_rules_allowed(true, RA_RULE_GRAPHICS));
+	/* Sin Hardcore todo vale. */
+	for (int a = 0; a < RA_RULE_ACTIONS; a++)
+		CHECK(ra_rules_allowed(false, (enum ra_rule_action)a));
+}
+
+static void rules_mode_change(void)
+{
+	bool d = true;
+	/* Sin juego abierto, el ajuste vale tal cual. */
+	CHECK(ra_rules_mode_change(false, false, true, &d));
+	CHECK(!d);
+	CHECK(!ra_rules_mode_change(false, true, false, &d));
+	/* Normal → Hardcore con el juego abierto: no, queda para el siguiente. */
+	CHECK(!ra_rules_mode_change(true, false, true, &d));
+	CHECK(d);
+	/* Hardcore → normal con el juego abierto: al instante. */
+	CHECK(!ra_rules_mode_change(true, true, false, &d));
+	CHECK(!d);
+	/* Sin cambio. */
+	CHECK(ra_rules_mode_change(true, true, true, &d));
+	CHECK(!ra_rules_mode_change(true, false, false, NULL));
+}
+
 void t_suite_ra(void)
 {
 	RUN(two_keyboards);
@@ -420,4 +459,6 @@ void t_suite_ra(void)
 	RUN(unknown_game);
 	RUN(hardcore);
 	RUN(offline);
+	RUN(rules_hardcore);
+	RUN(rules_mode_change);
 }

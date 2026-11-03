@@ -1865,7 +1865,7 @@ static void panel(const struct menu *m, float W, float H, float a)
 		static const char *const ra_acc_text[] = { "Usuario y contraseña con el", "teclado del sistema. Solo se",
 							   "guarda el token, en ra.cfg;", "la contraseña, nunca.", NULL,
 							   "×: iniciar o cerrar sesión.", NULL, NULL };
-		static const char *const ra_hc_text[] = { "Hardcore: sin estados ni", "trucos mientras hay logros.",
+		static const char *const ra_hc_text[] = { "Hardcore: sin cargar estados", "ni trucos mientras hay logros.",
 							  "Vale al abrir el siguiente", "juego.", NULL,
 							  "Se guarda en menu.cfg.", NULL, NULL };
 		const char *const order_text[] = { tr("Orden de los juegos de la lista."), NULL,

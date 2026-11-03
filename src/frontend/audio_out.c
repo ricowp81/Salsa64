@@ -252,7 +252,7 @@ static int open_port(void)
 
 /* ---- API --------------------------------------------------------------------- */
 
-int audio_out_init(struct salsa64_n64 *n64, bool old_ranges)
+int audio_out_init(struct salsa64_n64 *n64, uint32_t job_flags)
 {
 	struct audio_cfg cfg;
 	machine = n64;
@@ -267,11 +267,11 @@ int audio_out_init(struct salsa64_n64 *n64, bool old_ranges)
 			salsa64_log("audio: no arrancó el SPE de la HLE (%d): uso el PPE", rc);
 			hle = HLE_PPE;
 		}
-		hle_spu.job_flags = old_ranges ? AUD_JOB_RANGES_OLD : 0;
+		hle_spu.job_flags = job_flags;
 	}
 	if (hle == HLE_PPE) {
 		salsa64_audio_sync_init(&hle_ppe, &hle_ppe_state, &n64->bus);
-		hle_ppe.job_flags = old_ranges ? AUD_JOB_RANGES_OLD : 0;
+		hle_ppe.job_flags = job_flags;
 	}
 	salsa64_rsp_set_audio(&n64->bus, hle == HLE_SPE ? &hle_spu.backend : hle == HLE_PPE ? &hle_ppe.backend : NULL);
 	dump.len = dump.rate = 0;

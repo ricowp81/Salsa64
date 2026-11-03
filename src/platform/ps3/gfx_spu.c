@@ -741,6 +741,7 @@ static uint32_t spu_finish(void *ctx)
 	struct salsa64_gfx_spu *s = ctx;
 	if (s->no_worker) {
 		s->no_worker = false;
+		memset(&s->res, 0, sizeof s->res);  /* sin resultado: el ritmo del RCP cuenta solo la base */
 		return SALSA64_GFX_FULLSYNC | SALSA64_GFX_CUT;
 	}
 	if (!s->pending)
@@ -762,6 +763,14 @@ static uint32_t spu_finish(void *ctx)
 	salsa64_gfx_rdram_fills(s->bus, &s->job, &s->res);
 	s->sink.done(s->sink.ctx, &s->job, &s->res);
 	return salsa64_gfx_task_flags(&s->res);
+}
+
+/* Ritmo del RCP (rsp.c, gfx_model): lo que tardaría la consola en la tarea
+ * que acaba de recoger spu_finish, con su resultado. */
+static uint32_t spu_cycles(void *ctx)
+{
+	struct salsa64_gfx_spu *s = ctx;
+	return salsa64_gfx_model_cycles(&s->res, (enum salsa64_gbi)s->job.gbi);
 }
 
 /* Lista del RDP que escribe el CPU: el mismo SPE y el mismo estado que las
@@ -868,6 +877,7 @@ int salsa64_gfx_spu_init(struct salsa64_gfx_spu *s, const struct salsa64_bus *bu
 	s->backend.ctx = s;
 	s->backend.start = spu_start;
 	s->backend.finish = spu_finish;
+	s->backend.cycles = spu_cycles;
 	s->backend.state_size = GFX_STATE_BYTES;
 	s->backend.save_state = spu_save_state;
 	s->backend.load_state = spu_load_state;

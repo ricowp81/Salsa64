@@ -25,6 +25,7 @@
 #include <string.h>
 
 #include "core/bus.h"
+#include "core/gamefix.h"
 #include "core/sched.h"
 #include "cpu/vr4300.h"
 
@@ -111,6 +112,7 @@ static void field_event(void *ctx, uint64_t when)
 	struct salsa64_bus *bus = ctx;
 	struct salsa64_vi *vi = &bus->vi;
 	vi->fields++;
+	salsa64_gamefix_field(bus);
 	vi->field = (vi->regs[SALSA64_VI_CONTROL] & SALSA64_VI_CONTROL_SERRATE) ? vi->field ^ 1 : 0;
 	begin_field(bus, when);
 }
@@ -208,7 +210,6 @@ bool salsa64_vi_frame(const struct salsa64_bus *bus, struct salsa64_vi_frame *f)
 	if (f->width > pitch)
 		f->width = pitch;
 	f->origin = r[SALSA64_VI_ORIGIN] & 0xFFFFFF;
-	f->vpos = (r[SALSA64_VI_CONTROL] & SALSA64_VI_CONTROL_SERRATE) ? v_start + (bus->vi.field & 1) : 0;
 
 	/* Solo líneas completas dentro de la RDRAM. */
 	if (f->origin >= bus->rdram_size || f->width == 0)
@@ -219,5 +220,19 @@ bool salsa64_vi_frame(const struct salsa64_bus *bus, struct salsa64_vi_frame *f)
 	uint32_t max_lines = (room - f->width * f->bpp) / f->stride + 1;
 	if (f->height > max_lines)
 		f->height = max_lines;
+	bool serrate = (r[SALSA64_VI_CONTROL] & SALSA64_VI_CONTROL_SERRATE) != 0;
+	/* Un cuadro completo ya contiene las dos paridades: no desplazarlo de
+	 * nuevo por campo. Lo es un búfer contiguo del que cada renglón del campo
+	 * avanza más de una fila: 640 × 480 a Y_SCALE 2,0 (Indiana Jones, #39) o
+	 * escalado entre 1 y 2 (FIFA 99, #69: 512 × 384 a 1,6 en los menús y
+	 * 480 × 360 a 1,5 en el partido; el origen va a la fila 1 en los campos
+	 * impares y a la 2 en los pares, V_VIDEO dos medias líneas después, y
+	 * cada campo puede ser del otro búfer). Los modos que leen una fila de
+	 * cada dos (paso doble) o una por renglón conservan la compensación
+	 * anterior. */
+	bool full = y_scale == 0x800 && f->height >= 400;
+	bool scaled = !bus->vi.bob_scaled_frame && y_scale > 0x400 && y_scale < 0x800;
+	f->weave = serrate && !bus->vi.bob_full_frame && (full || scaled) && pitch == f->width;
+	f->vpos = serrate ? v_start + (f->weave ? 0 : bus->vi.field & 1) : 0;
 	return f->height > 0;
 }

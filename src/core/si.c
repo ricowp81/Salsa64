@@ -2,19 +2,21 @@
 /*
  * Salsa64 — Serial Interface (SI): DMA de 64 bytes entre la RDRAM y la PIF RAM.
  *
- * Una operación tarda aproximadamente 2 ms: durante ese tiempo SI_STATUS
- * lleva DMA_BUSY. Al terminar se hace la copia y se levanta la interrupción.
- * El PIF prepara los comandos joybus al completar una escritura y los ejecuta
- * al completar la lectura siguiente (pif.c).
+ * Mientras dura una operación SI_STATUS lleva DMA_BUSY; al terminar se hace
+ * la copia y se levanta la interrupción. La escritura (RDRAM → PIF RAM) son
+ * unos 65 µs; la lectura (PIF RAM → RDRAM) depende de los intercambios joybus
+ * que la PIF ejecuta antes de contestar (0,66 ms un control, 1,65 ms cuatro;
+ * salsa64_pif_read_cycles). `si-ritmo-viejo` vuelve a los 2 ms fijos de las
+ * dos. El PIF prepara los comandos joybus al completar una escritura y los
+ * ejecuta al completar la lectura siguiente (pif.c).
  */
 #include <string.h>
 
 #include "core/bus.h"
+#include "core/pif.h"
 #include "core/sched.h"
 #include "cpu/vr4300.h"
 
-/* Aproximación documentada de la transferencia completa del SI/PIF: 2 ms al
- * reloj de 93,75 MHz del VR4300. */
 enum { SI_DMA_NONE, SI_DMA_READ, SI_DMA_WRITE };
 
 static uint32_t si_dram(struct salsa64_bus *bus)
@@ -65,6 +67,20 @@ void salsa64_si_set_immediate(struct salsa64_bus *bus, bool immediate)
 	bus->si_immediate = immediate;
 }
 
+void salsa64_si_set_fixed(struct salsa64_bus *bus, bool fixed)
+{
+	bus->si_fixed = fixed;
+}
+
+/* Cuándo termina la operación que acaba de pedirse. */
+static uint64_t si_done_at(const struct salsa64_bus *bus, uint8_t op)
+{
+	uint64_t now = bus->cpu ? bus->cpu->cycles : 0;
+	if (bus->si_fixed)
+		return now + SALSA64_SI_DMA_CYCLES;
+	return now + (op == SI_DMA_WRITE ? SALSA64_SI_DMA_WRITE_CYCLES : salsa64_pif_read_cycles(bus));
+}
+
 uint32_t salsa64_si_read(const struct salsa64_bus *bus, uint32_t reg)
 {
 	uint32_t i = reg >> 2;
@@ -99,8 +115,7 @@ void salsa64_si_write(struct salsa64_bus *bus, uint32_t reg, uint32_t v)
 		if (bus->si_immediate)
 			si_complete(bus, bus->cpu ? bus->cpu->cycles : 0);
 		else if (bus->si_sched)
-			salsa64_sched_set(bus->si_sched, SALSA64_EV_SI_DMA,
-					  (bus->cpu ? bus->cpu->cycles : 0) + SALSA64_SI_DMA_CYCLES);
+			salsa64_sched_set(bus->si_sched, SALSA64_EV_SI_DMA, si_done_at(bus, SI_DMA_READ));
 		return;
 	case SALSA64_SI_PIF_ADDR_WR64B:  /* RDRAM → PIF RAM */
 		if (bus->si_pending != SI_DMA_NONE)
@@ -111,8 +126,7 @@ void salsa64_si_write(struct salsa64_bus *bus, uint32_t reg, uint32_t v)
 		if (bus->si_immediate)
 			si_complete(bus, bus->cpu ? bus->cpu->cycles : 0);
 		else if (bus->si_sched)
-			salsa64_sched_set(bus->si_sched, SALSA64_EV_SI_DMA,
-					  (bus->cpu ? bus->cpu->cycles : 0) + SALSA64_SI_DMA_CYCLES);
+			salsa64_sched_set(bus->si_sched, SALSA64_EV_SI_DMA, si_done_at(bus, SI_DMA_WRITE));
 		return;
 	case SALSA64_SI_STATUS:
 		salsa64_mi_clear(bus, SALSA64_IRQ_SI);

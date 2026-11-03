@@ -35,10 +35,12 @@ struct cuelgue {
 	uint32_t dumps;        /* volcados hechos en este juego */
 	bool said;             /* el aviso de este episodio ya salió */
 	bool init;
+	bool always;           /* avisar también de un juego que nunca dio señales de vida (latido-siempre) */
 };
 
-/* Al empezar un juego. */
-void cuelgue_reset(struct cuelgue *c);
+/* Al empezar un juego. `always`: avisar y volcar aunque el juego nunca haya
+ * leído los controles ni dibujado (un juego que se queda en su arranque). */
+void cuelgue_reset(struct cuelgue *c, bool always);
 
 /* Cada vuelta del latido. `expect`: el juego corre (no está en pausa ni
  * parado). `dir`: dónde escribir los volcados (sin barra final) o NULL

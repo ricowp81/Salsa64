@@ -15,8 +15,10 @@
  *      los 16 bytes que siguen); 2–7 índice del temporal; 8 temporal H;
  *      9–16 swizzle (2 bits por componente); 17 negar. En la palabra 1,
  *      además, bits 18–20 condición (7 = siempre) y 21–28 su swizzle. En la
- *      palabra 3, bit 31 = sin corrección de perspectiva (siempre 0 aquí) y
- *      0x7FC en los bits 19–29 cuando se lee un TEXCOORD, como cgcomp.
+ *      palabra 3, bit 31 = sin corrección de perspectiva (la entrada llega
+ *      dividida entre w e interpolada lineal en pantalla: solo con `affine`,
+ *      en las lecturas de X_j) y 0x7FC en los bits 19–29 cuando se lee un
+ *      TEXCOORD, como cgcomp.
  *
  * Registros: R0 es el color de salida; H2 acumula, H3 y H4 reciben las
  * texturas, H5 arma los productos. Las operaciones van en fp16 como las de
@@ -54,6 +56,8 @@
 #define SRC0_COND    (7u << 18 | SWZ_XYZW << 21)
 /* Palabra 3 cuando se lee un TEXCOORD. */
 #define SRC2_TEXCOORD (0x7FCu << 19)
+/* Palabra 3: la entrada sin corrección de perspectiva (rsxkit_fp_desc.affine). */
+#define SRC2_NO_PERSP (1u << 31)
 
 #define IN_COL0  1u
 #define IN_TC(n) (4u + (n))
@@ -76,6 +80,7 @@ struct emit {
 	int err;
 	uint32_t texcoords;
 	int max_h;
+	int affine;  /* las lecturas de X_j (TEXCOORD1..7) sin corrección de perspectiva */
 };
 
 static const struct opnd none = { 0, 0, SWZ_XYZW };
@@ -123,6 +128,8 @@ static void insn(struct emit *e, uint32_t opc, int dst, int sat, int end, const 
 	if (input >= IN_TC(0)) {
 		w3 |= SRC2_TEXCOORD;
 		e->texcoords |= 1u << (input - IN_TC(0));
+		if (input >= IN_TC(1) && e->affine)
+			w3 |= SRC2_NO_PERSP;
 	}
 	e->w[e->n++] = w0;
 	e->w[e->n++] = src_word(s0) | SRC0_COND;
@@ -173,7 +180,7 @@ static int term_factors(const rsxkit_fp_desc *d, unsigned j)
 
 static int desc_valid(const rsxkit_fp_desc *d)
 {
-	if (d->ntex > 2 || d->nterms < 1 || d->nterms > RSXKIT_FP_MAX_TERMS || d->pad[0] || d->pad[1])
+	if (d->ntex > 2 || d->nterms < 1 || d->nterms > RSXKIT_FP_MAX_TERMS || d->affine > 1 || d->pad)
 		return 0;
 	for (unsigned j = 0; j < RSXKIT_FP_MAX_TERMS; j++) {
 		int n = term_factors(d, j);
@@ -220,7 +227,7 @@ int rsxkit_fpgen_emit(const rsxkit_fp_desc *d, uint32_t *words, uint32_t max_wor
 {
 	if (!desc_valid(d))
 		return RSXKIT_FP_EDESC;
-	struct emit e = { words, 0, max_words, 0, 0, 0 };
+	struct emit e = { words, 0, max_words, 0, 0, 0, d->affine };
 	struct opnd uv = { IN_TC(0), 0, SWZ_XYZW }, uv2 = { IN_TC(0), 0, SWZ_ZWZW };
 	if (d->ntex >= 1)
 		insn(&e, OPC_TEX, H_TEX0, 0, 0, &uv, &none, &none, 0);

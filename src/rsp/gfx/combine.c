@@ -165,15 +165,15 @@ approx:
 	return a;
 }
 
+/* out = a·b, escrito directo en out: no puede ser a ni b. Sin un polinomio
+ * temporal ni su copia de vuelta, el marco es chico; está en la cadena más
+ * honda de la pila del SPE 0 (begin_prim → gfx_combine → run_cycle). */
 static void p_mul(poly *out, const poly *a, const poly *b, struct cc_ctx *x)
 {
-	/* El resultado va aparte para permitir out == a o out == b. */
-	poly r;
-	p_zero(&r);
+	p_zero(out);
 	for (unsigned i = 0; i < a->n; i++)
 		for (unsigned j = 0; j < b->n; j++)
-			p_term(&r, mono_mul(a->m[i], b->m[j], x), a->c[i] * b->c[j], x);
-	*out = r;
+			p_term(out, mono_mul(a->m[i], b->m[j], x), a->c[i] * b->c[j], x);
 }
 
 /* Entradas de un canal de color (lane 0–2). comb = COMBINED de ese canal y
@@ -268,28 +268,31 @@ static void unpack(uint32_t hi, uint32_t lo, struct cc_cycle cyc[2])
 	cyc[1].ad = lo & 0x7;
 }
 
+/* (A − B)·C + D por canal, con dos polinomios en el marco: A − B en a, C en
+ * b, el producto directo en out[lane] y D sumado después (las entradas no
+ * tienen efectos, el orden de las operaciones sobre los polinomios es el
+ * mismo). out no puede ser comb: COMBINED se lee de comb después de escribir
+ * out. run_cycle está en la cadena más honda de la pila del SPE 0. */
 static void run_cycle(const struct cc_cycle *cy, poly out[4], const poly comb[4], struct cc_ctx *x)
 {
 	for (int lane = 0; lane < 3; lane++) {
-		poly a, b, c, d;
+		poly a, b;
 		in_rgb(&a, 'a', cy->a, lane, &comb[lane], &comb[3], x);
 		in_rgb(&b, 'b', cy->b, lane, &comb[lane], &comb[3], x);
-		in_rgb(&c, 'c', cy->c, lane, &comb[lane], &comb[3], x);
-		in_rgb(&d, 'd', cy->d, lane, &comb[lane], &comb[3], x);
 		p_sub(&a, &b, x);
-		p_mul(&a, &a, &c, x);
-		p_add(&a, &d, x);
-		out[lane] = a;
+		in_rgb(&b, 'c', cy->c, lane, &comb[lane], &comb[3], x);
+		p_mul(&out[lane], &a, &b, x);
+		in_rgb(&a, 'd', cy->d, lane, &comb[lane], &comb[3], x);
+		p_add(&out[lane], &a, x);
 	}
-	poly a, b, c, d;
+	poly a, b;
 	in_alpha(&a, 'a', cy->aa, &comb[3], x);
 	in_alpha(&b, 'b', cy->ab, &comb[3], x);
-	in_alpha(&c, 'c', cy->ac, &comb[3], x);
-	in_alpha(&d, 'd', cy->ad, &comb[3], x);
 	p_sub(&a, &b, x);
-	p_mul(&a, &a, &c, x);
-	p_add(&a, &d, x);
-	out[3] = a;
+	in_alpha(&b, 'c', cy->ac, &comb[3], x);
+	p_mul(&out[3], &a, &b, x);
+	in_alpha(&a, 'd', cy->ad, &comb[3], x);
+	p_add(&out[3], &a, x);
 }
 
 static void rgba(uint32_t c, float out[4])
@@ -398,9 +401,10 @@ static void mono_factors(mono m, bool alpha, uint8_t f[GFX_K_FACTORS])
 			f[n++] = alpha ? pair[k][e & 1] : color[k];
 }
 
+/* 8 bytes (c primero, sin relleno): build_terms guarda 4·P_MAX en la pila. */
 struct need {
-	mono m;       /* canónico en el canal alfa */
 	float c;
+	mono m;       /* canónico en el canal alfa */
 	uint8_t lane;
 	bool done;
 };
@@ -433,7 +437,10 @@ static int term_serves(const uint8_t f[GFX_K_FACTORS], const struct need *nd)
 	return -1;
 }
 
-static void build_terms(const poly out[4], struct gfx_draw *d, struct cc_ctx *x)
+/* Aparte (noinline): sus needs[] (512 bytes) no se suman al marco de
+ * gfx_combine mientras corre run_cycle, la cadena más honda de la pila del
+ * SPE 0. Una llamada más por combiner calculado, no por vértice ni píxel. */
+static __attribute__((noinline)) void build_terms(const poly out[4], struct gfx_draw *d, struct cc_ctx *x)
 {
 	struct need needs[4 * P_MAX];
 	unsigned nneeds = 0;
@@ -544,17 +551,22 @@ bool gfx_combine(const struct gfx_state *g, struct gfx_draw *d)
 	struct cc_cycle cyc[2];
 	unpack(g->cc_hi, g->cc_lo, cyc);
 
-	poly comb[4] = { 0 }, out[4];
+	/* COMBINED del primer ciclo (o del único) vale cero. Con dos ciclos,
+	 * el primero deja su resultado en p1 y el segundo lo lee de ahí y
+	 * escribe en p0: run_cycle no puede escribir donde lee. */
+	poly p0[4] = { 0 }, p1[4];
+	const poly *out = p1;
 	unsigned cycle = (g->oh >> G_MDSFT_CYCLETYPE) & 3;
 	if (cycle == G_CYC_2CYCLE) {
-		run_cycle(&cyc[0], comb, comb, &x);
+		run_cycle(&cyc[0], p1, p0, &x);
 		/* Rareza del pipeline del RDP (n64brew.dev): en el segundo ciclo
 		 * TEXEL0 da el texel de la tile siguiente y TEXEL1 el del píxel
 		 * siguiente (≈ TEXEL0). */
 		x.swap = true;
-		run_cycle(&cyc[1], out, comb, &x);
+		run_cycle(&cyc[1], p0, p1, &x);
+		out = p0;
 	} else {
-		run_cycle(&cyc[1], out, comb, &x);
+		run_cycle(&cyc[1], p1, p0, &x);
 	}
 
 	d->tex[0].flags &= (uint8_t)~GFX_TEX_PREMUL;

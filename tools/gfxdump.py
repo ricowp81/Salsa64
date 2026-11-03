@@ -11,7 +11,7 @@ Mac y se repite con `tools/rpcs3-run.py --replay` o `salsa64-run --raster-dump`.
 
 --keep deja solo esos dibujos (los demás quedan con 0 vértices; destinos y
 borrados se conservan). --set N:campo=valor cambia un campo de un dibujo
-(cycle, cull, depth, blend, atest, aref, fog, ntex, tex0.flags...). --white N
+(cycle, cull, depth, blend, atest, aref, fog, ntex, cvg_bit, tex0.flags...). --white N
 pinta de blanco opaco la textura 0 del dibujo N. --k N:t,j=r,g,b,a cambia un
 coeficiente de la combinación lineal; --normw N divide los vértices entre w.
 """
@@ -22,9 +22,11 @@ import sys
 MAGIC = 0x53344744
 OPS = {0: "END", 1: "TARGET", 2: "ZCLEAR", 3: "DRAW"}
 U8_FIELDS = ["cycle", "cull", "depth", "blend", "atest", "aref", "fog", "ntex"]
-BLEND = ["OFF", "ALPHA", "ADD", "KEEP"]
+BLEND = ["OFF", "ALPHA", "ADD", "KEEP", "MUL", "ADD_MUL", "ALPHA_INV", "ADD_ONE"]
 # struct gfx_draw (gfx.h): desplazamientos desde el inicio del dibujo.
 OFF_NTERMS, OFF_FACTORS, OFF_VISCVG, OFF_AA = 48, 49, 77, 78
+OFF_CVG_BIT = 46                      # uint8_t cvg_bit, detrás de prim_tile (16 bits)
+CVG_BIT = ["ONE", "KEEP", "ALPHA", "MAX"]  # GFX_CVG_*: el bit de alfa en una imagen de 16 bits
 OFF_TEX, TEX_SIZE = 80, 40            # struct gfx_tex tex[2]
 OFF_K, K_TERMS = 160, 7               # float k[7][3][4]
 TERM_NAMES = ["T0", "T0a", "T1", "T1a", "1", "t5", "t6"]
@@ -87,10 +89,12 @@ class Dump:
         zimg = struct.unpack_from(e + "I", self.cmd, off + 16)[0]
         sc = struct.unpack_from(e + "4H", self.cmd, off + 20)
         f = dict(zip(U8_FIELDS, self.cmd[off + 28:off + 36]))
-        fogc, kind, tile = struct.unpack_from(e + "3I", self.cmd, off + 36)
+        fogc, kind = struct.unpack_from(e + "2I", self.cmd, off + 36)
+        cvg = self.cmd[off + OFF_CVG_BIT]
         s = (f"#{n:3d} off {off:6d} v {first}+{count} kind {kind} cyc {f['cycle']} "
              f"cull {f['cull']} depth {f['depth']} blend {BLEND[f['blend']] if f['blend'] < 4 else f['blend']} "
-             f"atest {f['atest']}/{f['aref']} fog {f['fog']} ntex {f['ntex']} z {zimg:x} "
+             f"atest {f['atest']}/{f['aref']} cvg {CVG_BIT[cvg] if cvg < 4 else cvg} "
+             f"fog {f['fog']} ntex {f['ntex']} z {zimg:x} "
              f"sc {[x / 4 for x in sc]}")
         for i in range(f["ntex"]):
             _, t = self.tex_at(off, i)
@@ -161,6 +165,8 @@ def cmd_edit(args):
             d.cmd[off + 28 + U8_FIELDS.index(key)] = int(val, 0)
         elif key == "aa":
             d.cmd[off + OFF_AA] = int(val, 0)
+        elif key == "cvg_bit":
+            d.cmd[off + OFF_CVG_BIT] = int(val, 0)
         elif key.startswith("tex") and "." in key:
             i, field = key[3:].split(".", 1)
             base, _ = d.tex_at(off, int(i))

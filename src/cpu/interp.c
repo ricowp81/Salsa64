@@ -294,6 +294,29 @@ static inline bool cop1_usable(struct salsa64_cpu *cpu)
 	return false;
 }
 
+/* ---- Barrido de la caché de datos ---------------------------------------- */
+
+/* CACHE 0x01 (Index_Writeback_Invalidate de la caché de datos) sobre la
+ * línea 0: empieza un barrido entero (salsa64_cpu_set_dcache_sweep, vr4300.h).
+ * Cobra lo que la consola tarda en escribir de vuelta las líneas sucias; el
+ * bucle recarga pc y cycles por cpu->redirect, como tras un bucle de espera.
+ * El recompilador lo emite él mismo (rec_emit_ext.h, emit_cache) y nunca
+ * manda aquí un CACHE 0x01 alineado por salsa64_vr4300_exec_one. */
+static void __attribute__((noinline)) dcache_sweep(struct salsa64_cpu *cpu, struct flow *f)
+{
+	cpu->cycles += cpu->dcache_sweep_cycles;
+	cpu->dcache_sweeps++;
+	cpu->pc = f->pc;
+	cpu->next_pc = f->next_pc;
+	cpu->branch = (uint8_t)f->branch;
+	cpu->redirect = 1;
+}
+
+void salsa64_cpu_set_dcache_sweep(struct salsa64_cpu *cpu, bool on)
+{
+	cpu->dcache_sweep_cycles = on ? SALSA64_DCACHE_SWEEP_CYCLES : 0;
+}
+
 /* ---- Decodificador principal --------------------------------------------- */
 
 HOT void execute(struct salsa64_cpu *cpu, struct flow *f, uint32_t i)
@@ -536,8 +559,10 @@ HOT void execute(struct salsa64_cpu *cpu, struct flow *f, uint32_t i)
 			salsa64_vr4300_exception(cpu, SALSA64_EXC_CPU, 0);
 		else if (VA & 3)  /* alineada a 4 basta; a 2 da AdEL */
 			salsa64_vr4300_address_error(cpu, VA, SALSA64_ACC_LOAD);
+		else if (SALSA64_UNLIKELY(rt == 0x01 && !(VA & 0x1FF0) && cpu->dcache_sweep_cycles))
+			dcache_sweep(cpu, f);  /* su costo: ver dcache_sweep */
 		return;
-	case 0x30:                                                               /* LL */
+	case 0x30:                                                              /* LL */
 		if (vr4300_vaddr(cpu, VA, 3, SALSA64_ACC_LOAD, &pa)) {
 			SET(rt, salsa64_sx32(vr4300_read32(cpu, pa)));
 			cpu->lladdr = pa >> 4;

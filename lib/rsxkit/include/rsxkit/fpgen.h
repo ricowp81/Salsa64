@@ -29,6 +29,15 @@
  * pruebas unitarias. La subida a la memoria del RSX y la caché de programas
  * están en fpcache.c.
  *
+ * Sombreado lineal en pantalla (`affine`): el RSX interpola los varyings
+ * con corrección de perspectiva, pero una instrucción puede leer su
+ * entrada sin ella (bit 31 de la palabra 3: la entrada llega dividida entre
+ * la w del vértice e interpolada lineal en pantalla, docs/rsx-notes.md).
+ * Si el vertex program multiplica cada X_j por w, el programa generado con
+ * `affine` recibe X_j interpolado lineal en pantalla, como interpola el
+ * sombreado el RDP de la N64; las coordenadas de textura (TEXCOORD0) y el
+ * color del vértice siguen con perspectiva. No cuesta instrucciones.
+ *
  * Formato del microcódigo (docs/rsx-notes.md): 4 palabras de 32 bits por
  * instrucción; aquí se entregan en el orden natural (bit 0 de la palabra 0
  * = fin de programa); para el RSX cada palabra se guarda con sus mitades
@@ -65,7 +74,8 @@ enum rsxkit_fp_factor {
 typedef struct rsxkit_fp_desc {
 	uint8_t ntex;    /* texturas que muestrea: 0, 1 o 2 */
 	uint8_t nterms;  /* 1..RSXKIT_FP_MAX_TERMS */
-	uint8_t pad[2];
+	uint8_t affine;  /* 1: los X_j se leen sin corrección de perspectiva (arriba) */
+	uint8_t pad;
 	uint8_t factors[RSXKIT_FP_MAX_TERMS][RSXKIT_FP_MAX_FACTORS];
 } rsxkit_fp_desc;
 

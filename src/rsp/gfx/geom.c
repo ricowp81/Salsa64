@@ -522,6 +522,7 @@ void gfx_vertices(struct gfx_state *g, const uint8_t *src, uint32_t v0, uint32_t
 		return;
 	if (n > GFX_MAX_VTX - v0)
 		n = GFX_MAX_VTX - v0;
+	g->res->vertices += n;  /* ritmo del RCP (salsa64_gfx_model_cycles) */
 	if (g->mvp_dirty) {
 		gfx_mtx_mul(g->mvp, g->mv[g->mv_top], g->proj);
 		g->mvp_dirty = false;

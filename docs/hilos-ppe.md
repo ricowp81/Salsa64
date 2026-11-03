@@ -306,6 +306,13 @@ que espera a los 0,5 s y luego cada 100 ms:
 - con «Salir del juego» pedido, o a los 12 s (45 s con el sistema encima),
   escribe el guardado diferido (y el vivo si la emulación está quieta),
   cierra la sesión del perfilado (`salida=rsx`) y sale con `forced_exit`.
+- desde 2026-10-29 (Indiana Jones, docs/rsx-notes.md), si el RSX no avanzó:
+  a los 2 s, además, registros y barreras, excepciones que avisó el sistema,
+  el búfer de comandos alrededor de GET y de PUT, el rastro de rsxkit y lo
+  último de los destinos; antes de salir, `rsx-colgado-<campo>/` en el
+  disco (búfer de comandos, volcado de la tarea, caja negra), y rsxkit
+  abandona el RSX (PUT = GET, sin más esperas ni vaciados) antes de
+  `forced_exit`.
 
 La espera de lugar en el búfer de comandos corre dentro del callback del
 sistema (su código no está en PSL1GHT) y no puede llamar al gancho: queda

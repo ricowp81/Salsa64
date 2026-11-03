@@ -83,6 +83,11 @@ después de `rsxkit_init` y `rsxkit_fb_create`.
 | `void rsxkit_finish(void)` | Espera a que el RSX termine todo lo enviado. |
 | `void rsxkit_set_wait_hook(fn, ctx, after_us, period_us)` | Esperas largas: si una espera del PPE al RSX (una etiqueta o barrera, `rsxkit_finish`, el flip) pasa de `after_us`, rsxkit llama a `fn(ctx, &info)` desde el hilo que espera, cada `period_us` mientras dure y una vez más al terminar (`info.done`). `rsxkit_wait_info` dice qué espera (`what`, etiqueta, valor esperado y actual), GET y PUT del búfer de comandos, GET al empezar (si no cambió, el RSX no avanzó) y el tiempo. El gancho puede diagnosticar, atender al sistema o salir del proceso; no puede llamar a rsxkit. Si devuelve `false` la espera se abandona y rsxkit queda perdido (`rsxkit_lost`): no vuelve a esperar al RSX y lo que se mande puede perderse; queda cerrar. |
 | `bool rsxkit_wait_now(rsxkit_wait_info *out)` | La espera en curso, desde cualquier hilo (un vigía). Es la única forma de ver la espera de lugar en el búfer de comandos (`RSXKIT_WAIT_FIFO`): corre dentro del callback del sistema y no llama al gancho. |
+| `void rsxkit_rsx_errors(rsxkit_rsx_error *out)` | Excepciones del RSX que avisó el sistema: `rsxkit_init` registra `gcmSetGraphicsHandler` y el aviso solo anota cuántas, el valor de la primera y de la última, cuándo y GET/PUT en ese momento. Desde cualquier hilo. |
+| `void rsxkit_fifo_info_get(rsxkit_fifo_info *out)` | El búfer de comandos en offsets de E/S (memoria que lo contiene, segmento en curso, dónde escribe rsxkit), GET, PUT y REF, y la última barrera y el último `rsxkit_finish` mandados y escritos por el RSX. Desde cualquier hilo. |
+| `unsigned rsxkit_trace_get(out, max)` / `rsxkit_trace_format` | Rastro de las últimas 64 operaciones de rsxkit (ligar, borrar, dibujos seguidos juntos, cargas de la z, lecturas y llenados de destinos, barreras, flips…), cada una con el offset del búfer de comandos en que empezó. Se anota en el PPE, sin órdenes al RSX. Con GET, PUT y las etiquetas dice qué tenía el RSX delante al colgarse. |
+| `bool rsxkit_abandon(uint32_t *get, uint32_t *put_before)` | Para salir con el RSX colgado: rsxkit no lo vuelve a esperar ni a vaciar el búfer (ni barreras, ni `rsxkit_finish`, ni flips) y, si GET está dentro del búfer y no pasa de PUT, pone PUT = GET para que no le quede nada pendiente. |
+| `void rsxkit_set_safe(uint32_t flags)` | Blindaje (todo encendido por omisión). `RSXKIT_SAFE_SIFM_EVEN`: `rsxkit_depth_load` reparte la copia en tramos de ancho de entrada par (el motor de imagen escalada; un ancho impar es lo último que se mandó antes de que el RSX de la PS3 dejara de avanzar); el tramo impar lee un texel más de su fila, que no llega a la salida. |
 | `const uint32_t *rsxkit_back_buffer(uint32_t *pitch)` | Búfer de color del cuadro en curso (X8R8G8B8), para pruebas automáticas. Llamar después de `rsxkit_finish`. Leer la memoria del RSX desde el PPE es muy lento. |
 
 ### Framebuffer 2D
@@ -147,7 +152,7 @@ el tamaño del destino.
 | `rsxkit_depth *rsxkit_depth_create(w, h)` / `rsxkit_depth_destroy(d)` | Profundidad; nace en 1. Debe ser al menos tan grande como el destino. |
 | `int rsxkit_bind(t, d, lw, lh)` | Dibujar en `t` (y `d`, o `NULL`) con espacio lógico `lw × lh`, hasta otro `rsxkit_bind` o `rsxkit_frame_begin`. Sin `d` (o con una más chica que `t`) liga la profundidad de la pantalla, con prueba y escritura apagadas; si tampoco cubre a `t`, no liga nada y devuelve `RSXKIT_EDEPTH` (una zeta más chica que el color puede fallar o recortar en el RSX). |
 | `int rsxkit_depth_reserve(w, h)` | Agranda la profundidad de la pantalla a al menos `w × h`, para ligar sin profundidad propia destinos más grandes que la pantalla (1600×1200 en 720p). Reserva al llamarla (fuera del bucle de dibujo), olvida lo ligado y se conserva en `rsxkit_video_reconfigure`; `0 × 0` vuelve al tamaño de la pantalla. `rsxkit_target_copy`, `rsxkit_target_fill` y `rsxkit_target_read` también devuelven `RSXKIT_EDEPTH` si su superficie no cabe en ella. |
-| `rsxkit_target *rsxkit_target_create_ex(w, h, flags)` / `int rsxkit_target_has_alpha(t)` | Con `RSXKIT_TARGET_ALPHA`, un destino A8R8G8B8 con canal alfa, para render a textura con transparencia (una imagen RGBA5551 de una consola de 16 bits). Nace con alfa 0. Lo escriben: `rsxkit_clear` (el byte alto de `rgb` es el alfa), los dibujos (cada píxel escrito queda con alfa 1; con `rsxkit_draw.dst_alpha = RSXKIT_DSTA_FRAG` y `blend = RSXKIT_BLEND_OFF`, con el alfa del fragmento: rellenos de un color de alfa 0/1 y copias de textura), `rsxkit_target_fill` (el bit de alfa de `RSXKIT_RGBA5551`) y `rsxkit_target_copy` (copia el alfa si el origen también lo tiene). `rsxkit_target_texture` lo devuelve como `RSXKIT_XRGB8888`, cuyo alfa el 3D lee; el framebuffer 2D y `rsxkit_target_present` lo ignoran. Cada dibujo en un destino con alfa mezcla (ONE / ZERO en los opacos): úsese en los que se leen como textura, no en el cuadro principal. |
+| `rsxkit_target *rsxkit_target_create_ex(w, h, flags)` / `int rsxkit_target_has_alpha(t)` | Con `RSXKIT_TARGET_ALPHA`, un destino A8R8G8B8 con canal alfa, para render a textura con transparencia (una imagen RGBA5551 de una consola de 16 bits). Nace con alfa 0. Lo escriben: `rsxkit_clear` (el byte alto de `rgb` es el alfa), los dibujos (según `rsxkit_draw.dst_alpha`, con cualquier mezcla del color: `RSXKIT_DSTA_ONE` deja alfa 1 en cada píxel escrito —la mezcla no da una constante, así que si el alfa del fragmento no es 1 en todo el dibujo va en dos pasadas: una solo en el alfa con el alfa llevado a 1 o más y la misma prueba de alfa y de profundidad, y el dibujo con `KEEP`; `rsxkit_dsta_stats` las cuenta y `rsxkit_dsta_selftest` lo comprueba en el RSX—, `RSXKIT_DSTA_FRAG` el alfa del fragmento —rellenos de un color de alfa 0/1, copias de textura—, `RSXKIT_DSTA_KEEP` el del destino sin cambiar y `RSXKIT_DSTA_MAX` el mayor de los dos; hasta 2026-10-31 `RSXKIT_DSTA_ONE` dejaba en realidad el del fragmento), `rsxkit_target_fill` (el bit de alfa de `RSXKIT_RGBA5551`) y `rsxkit_target_copy` (copia el alfa si el origen también lo tiene). `rsxkit_target_texture` lo devuelve como `RSXKIT_ARGB8888` (los destinos sin alfa, como `RSXKIT_XRGB8888`): el 3D y el posprocesado leen su alfa; `rsxkit_target_present` lo ignora. Las mezclas `RSXKIT_BLEND_ALPHA_MAX`, `_REPLACE_MIN_ALPHA` y `_KEEP_MIN_ALPHA` dejan en el alfa el máximo o el mínimo con el del destino, sin mirar `dst_alpha`. `RSXKIT_CLEAR_ALPHA` en `rsxkit_clear` toma el byte alto como alfa aunque el destino no tenga canal alfa. `rsxkit_target_create_rgba(w, h)` es `rsxkit_target_create_ex` con `RSXKIT_TARGET_ALPHA`. En un destino con alfa, `RSXKIT_DSTA_ONE` cuesta una pasada más por dibujo cuyo alfa no es 1 y `_MAX` mezcla siempre: úsese en los que se leen como textura, no en el cuadro principal. |
 | `void rsxkit_clear(flags, rgb, depth, rect)` | Borra color y/o profundidad en un rectángulo lógico (`NULL`: todo). `rgb` es `0x00RRGGBB`; en un destino con alfa el byte alto es el alfa. |
 | `void rsxkit_target_present(t, src, img_w, img_h, view, out)` | En el cuadro en curso, presenta la región `src` del destino (cualquier rectángulo: sirve para recortar el overscan) acomodada como una imagen de `img_w × img_h` (como `rsxkit_fb_draw`). |
 
@@ -161,7 +166,7 @@ memoria de video):
 | `void rsxkit_texture_sync(void)` | Antes del primer dibujo que lea como textura un destino dibujado en el mismo tramo: espera al RSX e invalida su caché de texturas. |
 | `int rsxkit_target_copy(dst, src)` | Copia todo `src` en `dst` (para leer lo que se está dibujando: se copia y se lee la copia). Deja `dst` ligado sin profundidad. |
 | `int rsxkit_target_fill(t, src_offset, src_pitch, w, h, format)` | Pinta todo el destino con una imagen de la memoria principal mapeada, estirada sin filtro (cebar un destino con lo que la CPU dejó en su memoria). Deja `t` ligado sin profundidad. |
-| `int rsxkit_target_read(t, src, dst_offset, dst_pitch, img_w, img_h, format)` | Reduce la región `src` del destino a `img_w × img_h` (filtro lineal) y la escribe en memoria principal mapeada, en `RSXKIT_RGB565` o `RSXKIT_XRGB8888`, con el pipeline 3D sobre una superficie en memoria principal. Encola y vuelve: `rsxkit_fence` / `rsxkit_fence_wait` dicen cuándo está. Los píxeles de 16 bits quedan en orden de bytes de la PS3, sin tramado (el RSX no suma su patrón de *dithering*: una imagen que vuelve por aquí cada cuadro lo acumularía). Deshace lo ligado. |
+| `int rsxkit_target_read(t, src, dst_offset, dst_pitch, img_w, img_h, format)` | Reduce la región `src` del destino a `img_w × img_h` (filtro lineal) y la escribe en memoria principal mapeada, en `RSXKIT_RGB565`, `RSXKIT_XRGB8888` o `RSXKIT_ARGB8888` (este con el alfa de un destino `RSXKIT_TARGET_ALPHA`, filtrado como el color; 1 si no tiene), con el pipeline 3D sobre una superficie en memoria principal. Encola y vuelve: `rsxkit_fence` / `rsxkit_fence_wait` dicen cuándo está. Los píxeles de 16 bits quedan en orden de bytes de la PS3, sin tramado (el RSX no suma su patrón de *dithering*: una imagen que vuelve por aquí cada cuadro lo acumularía). Deshace lo ligado. |
 | `void rsxkit_pixels_565_to_5551(dst, src, n)` | RGB565 → RGBA5551 con alfa 1 (el formato de 16 bits de una consola), cuatro píxeles por palabra; `dst` y `src` pueden ser el mismo. |
 
 ### Dibujo 3D
@@ -193,7 +198,10 @@ rsxkit_draw_triangles(&d, first, count);
   una sola vez (`RSXKIT_WRAP_MIRROR_ONCE`: u en [−1, 0] es el reflejo de
   [0, 1] y fuera de [−1, 1] se fija el borde), filtro y la transformación
   `u = s·xf[0] + xf[2]`, `v = t·xf[1] + xf[3]`.
-- **Estado**: mezcla (opaca, alfa, aditiva, sin color), profundidad (prueba
+- **Estado**: mezcla (`rsxkit_blend`: opaca, alfa `src·a + dst·(1 − a)`,
+  aditiva `src·a + dst`, sin color, y los demás productos con el alfa del
+  fragmento que un blender de consola pide: `dst·a`, `src + dst·a`,
+  `src·(1 − a) + dst·a` y `src + dst`), profundidad (prueba
   LEQUAL, escritura, desplazamiento para calcomanías), recorte de caras
   (frente = antihorario con la y hacia arriba), prueba de alfa, tijeras
   lógicas (recortadas al destino; si quedan vacías el dibujo no se manda:
@@ -207,9 +215,27 @@ rsxkit_draw_triangles(&d, first, count);
   (la profundidad del primitivo del RDP de la N64). Con `z = c` en los
   vértices (`pos[2] = c·pos[3]`) cada vértice redondearía distinto y los
   dibujos coplanares se pisarían al azar.
+- **Sombreado lineal en pantalla** (`rsxkit_affine_shade(1)`): los `X_j`
+  (color del vértice, su alfa y la niebla) se interpolan sin corrección de
+  perspectiva, como el Gouraud del RDP de la N64 y de otras consolas de la
+  época; las coordenadas de textura siguen con perspectiva. El vertex
+  program multiplica cada `X_j` por w y los fragment programs los leen con
+  el bit del RSX que entrega la entrada dividida entre w: no cuesta
+  instrucciones por píxel (`docs/rsx-notes.md` del emulador).
 - `rsxkit_vertices` invalida las cachés de vértices y texturas del RSX:
   llamarlo cada vez que cambió lo que hay en memoria.
-- rsxkit recuerda el estado y solo reenvía lo que cambió.
+- **Segundo color por vértice**: la palabra `pad` del vértice puede llevar
+  otro RGBA de 8 bits; con `rsxkit_vertices_color_aux(1)` los dibujos
+  siguientes lo leen como COLOR0 en lugar de `rgba` (datos por vértice para
+  un programa propio sin otro arreglo ni constantes por dibujo).
+- **Stencil**: prueba (siempre, distinto, igual) con referencia y máscaras,
+  y operaciones separadas al pasar (`stencil_op`), al fallar la profundidad
+  (`stencil_zfail`) y al fallar el stencil (`stencil_sfail`): conservar,
+  reemplazar o poner a cero. La profundidad admite también `RSXKIT_DEPTH_EQUAL`.
+- rsxkit recuerda el estado y solo reenvía lo que cambió. Un programa propio
+  (`rsxkit_draw.program`) se carga solo al cambiar de programa y su etiqueta
+  de uso se escribe al cambiarlo, al salir del 3D o antes de destruirlo;
+  `rsxkit_3d_program_sync(1)` vuelve a cargarlo y etiquetarlo en cada dibujo.
 
 ### Generador de fragment programs
 

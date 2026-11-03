@@ -274,6 +274,53 @@ static void cj_write(void *arg)
 	cj.finished = 1;
 }
 
+bool cajanegra_write_now(const char *path, uint64_t wait_us, char *err, unsigned err_size)
+{
+	char dummy[8];
+	if (!err) {
+		err = dummy;
+		err_size = sizeof dummy;
+	}
+	err[0] = '\0';
+	if (!cj.on) {
+		snprintf(err, err_size, "caja negra apagada (falta %s)", CAJANEGRA_CFG);
+		return false;
+	}
+	if ((cj.pending || bgjob_busy()) && bgjob_ready() && !bgjob_wait(wait_us ? wait_us : 1)) {
+		snprintf(err, err_size, "una escritura en segundo plano no terminó a tiempo");
+		return false;
+	}
+	cj.frozen = 1;
+	struct bb_meta meta;
+	memset(&meta, 0, sizeof meta);
+	meta.field = cj.cur_field;
+	if (cj.bus && cj.bus->rom && cj.bus->rom_size >= ROM_TITLE_END) {
+		meta.crc1 = salsa64_rd32(cj.bus->rom + ROM_CRC1);
+		meta.crc2 = salsa64_rd32(cj.bus->rom + ROM_CRC2);
+		memcpy(meta.title, cj.bus->rom + ROM_TITLE, sizeof meta.title);
+	}
+	char tmp[160];
+	snprintf(tmp, sizeof tmp, "%s.tmp", path);
+	struct bgio_out io;
+	uint64_t raw = 0;
+	bool ok = bgio_out_open(&io, tmp);
+	if (!ok)
+		snprintf(err, err_size, "no se pudo crear %s", tmp);
+	else if (!(ok = bb_write(&cj.ring, &meta, NULL, NULL, bgio_out_write, &io, &raw)))
+		snprintf(err, err_size, "no se pudo escribir");
+	else
+		bgio_out_sync(&io);  /* al disco antes del cierre forzado */
+	char ferr[160] = "";
+	ok = bgio_out_finish(&io, ok, tmp, path, ferr, sizeof ferr);
+	if (!ok && !err[0])
+		snprintf(err, err_size, "%s", ferr);
+	if (ok)
+		snprintf(err, err_size, "%u tareas, %u campos, %u notas, %llu KB en %.1f ms", cj.ring.ntask, cj.ring.nfield,
+			 cj.ring.nnote, (unsigned long long)(raw >> 10), io.us / 1e3);
+	cj.frozen = 0;
+	return ok;
+}
+
 void cajanegra_pump(uint64_t now_us)
 {
 	(void)now_us;

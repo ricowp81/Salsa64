@@ -111,6 +111,28 @@ void salsa64_evlog_add(struct salsa64_bus *bus, uint32_t kind, uint32_t a, uint3
 
 static void dp_sync_at(struct salsa64_bus *bus, uint64_t now);
 
+/* Ritmo del RCP (gfx_model, rcp.h): la tarea gráfica que la HLE acaba de
+ * terminar (flags: lo que devolvió finish) no termina para el juego antes
+ * de lo que tardaría la consola en ella. Si falta, queda recogida y su fin
+ * se programa a esa hora (no antes de `when`, el fin ya programado);
+ * devuelve si se retrasó. Se aplica una vez por tarea: al recogerla. */
+static bool gfx_model_hold(struct salsa64_rsp *rsp, uint64_t when, uint32_t flags)
+{
+	if (!rsp->gfx_model || !rsp->gfx || !rsp->gfx->cycles || !rsp->sched)
+		return false;
+	uint64_t c = (uint64_t)rsp->gfx->cycles(rsp->gfx->ctx) * rsp->gfx_model / 100u;
+	rsp->stats.model_sum += c;
+	uint64_t end = rsp->gfx_start + c;
+	if (end <= when)
+		return false;
+	rsp->stats.model_held++;
+	rsp->stats.model_wait += end - when;
+	rsp->collected = true;
+	rsp->collected_flags = flags;
+	salsa64_sched_set(rsp->sched, SALSA64_EV_SP_TASK, end);
+	return true;
+}
+
 static void task_event(void *ctx, uint64_t when)
 {
 	struct salsa64_bus *bus = ctx;
@@ -141,12 +163,15 @@ static void task_event(void *ctx, uint64_t when)
 		rsp->busy = 0;
 		return;
 	}
-	if (rsp->busy == SALSA64_TASK_GFX && rsp->gfx)
+	if (rsp->busy == SALSA64_TASK_GFX && rsp->gfx) {
 		flags = rsp->gfx->finish(rsp->gfx->ctx);
-	else if (rsp->busy == SALSA64_TASK_AUDIO && rsp->audio)
+		if (gfx_model_hold(rsp, when, flags))
+			return;
+	} else if (rsp->busy == SALSA64_TASK_AUDIO && rsp->audio) {
 		rsp->audio->finish(rsp->audio->ctx, bus);
-	else if (rsp->busy == SALSA64_TASK_JPEG && rsp->jpeg_be)
+	} else if (rsp->busy == SALSA64_TASK_JPEG && rsp->jpeg_be) {
 		jpeg_collect(rsp);
+	}
 finished:
 	if (rsp->busy == SALSA64_TASK_GFX) {
 		rsp->stats.gfx_last = flags;
@@ -283,6 +308,11 @@ bool salsa64_rsp_quiesce(struct salsa64_bus *bus)
 		jpeg_collect(rsp);
 	rsp->collected = true;
 	rsp->collected_flags = flags;
+	/* El fin sigue en el evento ya programado; con el ritmo del RCP, no
+	 * antes de lo que tardaría la consola. */
+	if (rsp->busy == SALSA64_TASK_GFX && rsp->sched &&
+	    rsp->sched->when[SALSA64_EV_SP_TASK] != SALSA64_SCHED_NEVER)
+		gfx_model_hold(rsp, rsp->sched->when[SALSA64_EV_SP_TASK], flags);
 	return true;
 }
 
@@ -457,29 +487,51 @@ static bool gfx_ucode_nonear(const uint8_t *q, const uint8_t *end)
 	return false;
 }
 
-/* La variante Acclaim comparte el texto de F3DEX2: solo se distingue por
- * los 4 KB de código y solo cuando el interruptor optativo está activo. */
-static bool acclaim_ucode(const struct salsa64_bus *bus, const struct salsa64_task *task)
+/* Variantes de F3DEX2 que solo se distinguen por los 4 KB de código (CRC-32
+ * en palabras al revés, como ucode_crcs_w). */
+#define ACCLAIM_CRC_W 0xE44DF568u
+#define EUROCOM_CRC_W 0xC6121CAAu
+#define CONKER_CRC_W 0x1B4ACE88u /* 0x99E222AC con los bytes tal cual */
+
+/* El CRC-32 (palabras al revés) de los 4 KB de código de la tarea, o 0 si no
+ * carga 4 KB de la RDRAM o ninguna variante que lo mira está activa: una sola
+ * vez por tarea para todas. */
+static uint32_t code_crc_w(const struct salsa64_bus *bus, const struct salsa64_task *task)
 {
-	if (!bus->rsp.gfx || !bus->rsp.gfx->acclaim)
-		return false;
+	const struct salsa64_gfx_backend *gfx = bus->rsp.gfx;
+	if (!gfx || !(gfx->acclaim || gfx->eurocom || !gfx->conker_text_only))
+		return 0;
 	uint32_t addr = task->ucode & 0x1FFFFFFFu;
 	uint32_t size = task->ucode_size ? task->ucode_size : 0x1000u;
-	return size == 0x1000u && in_rdram(bus, addr, size) &&
-	       salsa64_crc32_words_swapped(bus->rdram + addr, size) == 0xE44DF568u;
+	return size == 0x1000u && in_rdram(bus, addr, size) ? salsa64_crc32_words_swapped(bus->rdram + addr, size) : 0;
+}
+
+/* La variante Acclaim comparte el texto de F3DEX2: solo se distingue por
+ * los 4 KB de código y solo cuando el interruptor optativo está activo. */
+static bool acclaim_ucode(const struct salsa64_bus *bus, uint32_t crc_w)
+{
+	return bus->rsp.gfx && bus->rsp.gfx->acclaim && crc_w == ACCLAIM_CRC_W;
 }
 
 /* Cruis'n Exotica conserva el texto de F3DEX2, pero usa G_SPECIAL_1 para
  * ejecutar bloques contados de comandos F3DEX2. Se distingue por el código, como
  * las demás variantes cuyo texto genérico no basta. */
-static bool eurocom_ucode(const struct salsa64_bus *bus, const struct salsa64_task *task)
+static bool eurocom_ucode(const struct salsa64_bus *bus, uint32_t crc_w)
 {
-	if (!bus->rsp.gfx || !bus->rsp.gfx->eurocom)
-		return false;
-	uint32_t addr = task->ucode & 0x1FFFFFFFu;
-	uint32_t size = task->ucode_size ? task->ucode_size : 0x1000u;
-	return size == 0x1000u && in_rdram(bus, addr, size) &&
-	       salsa64_crc32_words_swapped(bus->rdram + addr, size) == 0xC6121CAAu;
+	return bus->rsp.gfx && bus->rsp.gfx->eurocom && crc_w == EUROCOM_CRC_W;
+}
+
+/* Conker (#68): el juego trae un solo código y ocho segmentos de datos que
+ * se llaman «F3DEX», «F3DEXBS», «F3DEXBG» y «F3DEXBGBS», con y sin «.NoN».
+ * Entre ellos solo cambian el texto, las constantes del recorte cercano y
+ * una palabra (DMEM 0x6AC); todos traen G_TRI4, los vértices de 16 bytes y
+ * las luces de Rare. El juego usa «F3DEXBG.NoN» y, desde el ascensor del
+ * final de Heist, «F3DEX.NoN»: por su texto parecía un F3DEX2 y la HLE no
+ * dibujaba sus G_TRI4 (0x10–0x1F, «sin implementar»). El interruptor
+ * conker-ucode-viejo (conker_text_only) vuelve a mirar solo el texto. */
+static bool conker_ucode(const struct salsa64_bus *bus, uint32_t crc_w)
+{
+	return bus->rsp.gfx && !bus->rsp.gfx->conker_text_only && crc_w == CONKER_CRC_W;
 }
 
 static enum salsa64_gbi detect_gbi(const struct salsa64_bus *bus, const struct salsa64_task *task, bool *nonear);
@@ -555,11 +607,24 @@ static enum salsa64_gbi detect_gbi(const struct salsa64_bus *bus, const struct s
 	if (size > bus->rdram_size - addr)
 		size = bus->rdram_size - addr;
 	const uint8_t *p = bus->rdram + addr, *end = p + size;
-	/* Antes del texto genérico F3DEX2, que esta variante también trae. */
-	if (acclaim_ucode(bus, task))
+	/* Antes del texto genérico F3DEX2, que estas variantes también traen. */
+	const uint32_t crc_w = code_crc_w(bus, task);
+	if (acclaim_ucode(bus, crc_w))
 		return SALSA64_GBI_F3DEX2ACCLAIM;
-	if (eurocom_ucode(bus, task))
+	if (eurocom_ucode(bus, crc_w))
 		return SALSA64_GBI_F3DEX2EUROCOM;
+	if (conker_ucode(bus, crc_w)) {
+		/* Sin recorte cercano si el nombre dice «.No» («F3DEXBGBS.No» no
+		 * cabe entero en el texto; sus datos son los de «F3DEXBG.NoN»). */
+		const uint8_t *q = find(p, end, "RSP Gfx ucode ");
+		if (q)
+			for (q += 14; q + 3 <= end && *q > ' ' && *q < 0x7F; q++)
+				if (starts_with(q, end, ".No")) {
+					*nonear = true;
+					break;
+				}
+		return SALSA64_GBI_F3DEXBG;
+	}
 
 	/* ROMs de prueba de Salsa64 (sin microcódigo de Nintendo). */
 	if (find(p, end, "Salsa64 GBI Turbo3D") && bus->rsp.gfx && bus->rsp.gfx->turbo3d)
@@ -743,6 +808,7 @@ void salsa64_rsp_start(struct salsa64_bus *bus)
 	if (task.type == SALSA64_TASK_GFX && valid && rsp->sched && !rsp->jpeg_video) {
 		if (gbi != SALSA64_GBI_UNKNOWN && (!s2dex_gbi || s2dex_ok)) {
 			rsp->stats.gfx++;
+			rsp->gfx_start = now;
 			rsp->busy = SALSA64_TASK_GFX;
 			rsp->gbi = gbi;
 			rsp->gfx_nonear = nonear;

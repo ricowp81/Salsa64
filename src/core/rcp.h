@@ -142,6 +142,10 @@ struct salsa64_gfx_backend {
 	 * puede dormir un poco en vez de volver en el acto, para que el reloj
 	 * emulado no corra más rápido que el real. */
 	bool (*done)(void *ctx, bool idle);
+	/* Opcional (ritmo del RCP, rsp.c): tras finish, cuántos ciclos del
+	 * VR4300 tardaría la consola en la tarea que acaba de terminar, estimado
+	 * con lo que hizo la HLE (salsa64_gfx_model_cycles); 0 si no se sabe. */
+	uint32_t (*cycles)(void *ctx);
 	/* Opcionales (estados guardados, core/state.c), sin tarea en vuelo: el
 	 * estado que la HLE conserva entre tareas (el del RDP y la TMEM) en un
 	 * formato portable de state_size bytes, y de vuelta. */
@@ -155,6 +159,10 @@ struct salsa64_gfx_backend {
 	bool turbo3d; /* familia experimental: apagada salvo petición explícita */
 	bool acclaim; /* variante optativa: solo se reconoce por CRC cuando está activa */
 	bool eurocom; /* variante optativa: solo se reconoce por CRC cuando está activa */
+	/* Interruptor conker-ucode-viejo: el microcódigo de Conker solo por su
+	 * texto («F3DEXBG»), como antes de #68; si no (por omisión), también sus
+	 * otras variantes («F3DEX.NoN»…), por el CRC de su código (rsp.c). */
+	bool conker_text_only;
 };
 
 /* ABI de las listas de audio (alist): cada microcódigo de audio numera y
@@ -307,6 +315,10 @@ struct salsa64_rsp_stats {
 	/* De la última tarea gráfica con microcódigo desconocido: dónde está su código y datos
 	 * (para el log: salsa64_rsp_ucode_ident). */
 	uint32_t unknown_ucode, unknown_ucode_size, unknown_data_size;
+	/* Ritmo del RCP (gfx_model): tareas cuyo fin se retrasó, ciclos que se
+	 * agregaron y la suma de las duraciones estimadas. */
+	uint32_t model_held;
+	uint64_t model_wait, model_sum;
 };
 
 /* Diagnóstico de cuelgues (frontend/cuelgue.c): los últimos eventos del RCP que el
@@ -349,6 +361,13 @@ struct salsa64_rsp {
 	enum salsa64_abi abi;   /* de la última tarea de audio */
 	/* Duración aparente de cada tarea, en ciclos del VR4300. */
 	uint32_t gfx_cycles, audio_cycles, dp_cycles, jpeg_cycles;
+	/* Ritmo del RCP (rsp-ritmo): con gfx_model en porcentaje (0: apagado) y
+	 * un backend con `cycles`, una tarea gráfica no termina antes de
+	 * gfx_start + cycles·gfx_model/100, lo que la consola tardaría en ella
+	 * (el RSP real, medido en ares); si no, el juego que no espera el
+	 * retrazo dibuja cuadros de más y su lógica corre más rápido. */
+	uint32_t gfx_model;
+	uint64_t gfx_start;     /* ciclo en que arrancó la tarea gráfica en curso */
 	/* Interrupción del DP retenida: el RDP terminó (SYNC_FULL) mientras
 	 * estaba congelado (DPC_STATUS FREEZE); llega al descongelarlo. */
 	bool dp_held;
@@ -417,6 +436,10 @@ struct salsa64_vi {
 	uint64_t field_start;   /* ciclo del VR4300 en que empezó el campo */
 	uint64_t field_cycles;  /* duración del campo en curso */
 	struct salsa64_sched *sched;
+	bool bob_full_frame;    /* diagnóstico: conservar campos en cuadros completos */
+	/* Los cuadros completos escalados (Y_SCALE entre 1 y 2: FIFA 99) vuelven
+	 * a presentarse por campos, como hasta la v0.2.15 (vi-escalado-campos). */
+	bool bob_scaled_frame;
 };
 
 /* Imagen que saca el VI: la parte visible del framebuffer en la RDRAM. */
@@ -430,8 +453,10 @@ struct salsa64_vi_frame {
 	/* Posición vertical del campo (entrelazado): la primera media línea de
 	 * V_VIDEO más el bit de campo del VI (medio renglón de la trama). Dos campos seguidos del mismo cuadro caen en
 	 * renglones contiguos de la pantalla. 0 si no es entrelazado (SERRATE
-	 * apagado) o no se conoce. */
+	 * apagado) o no se conoce. Al tejer un cuadro completo se omite el bit
+	 * de campo: la imagen ya contiene ambas paridades. */
 	uint32_t vpos;
+	bool weave;  /* cuadro completo y contiguo: estabilizar también al cambiar de búfer */
 };
 
 enum salsa64_ai_reg {
@@ -490,7 +515,11 @@ enum salsa64_si_reg {
 /* Estados transitorios observados durante cada sentido de la operación. */
 #define SALSA64_SI_STATUS_READ      0x0140u
 #define SALSA64_SI_STATUS_WRITE     0x0410u
-#define SALSA64_SI_DMA_CYCLES       187500u  /* aproximadamente 2 ms a 93,75 MHz */
+#define SALSA64_SI_DMA_CYCLES       187500u  /* ritmo fijo anterior: unos 2 ms a 93,75 MHz (si-ritmo-viejo) */
+/* RDRAM → PIF RAM: la copia de 64 bytes sola, unos 65 µs (ares: 4065 × 3 a 187,5 MHz).
+ * PIF RAM → RDRAM: la PIF ejecuta antes los intercambios joybus; lo estima
+ * salsa64_pif_read_cycles según lo que haya en la PIF RAM. */
+#define SALSA64_SI_DMA_WRITE_CYCLES 6098u
 
 #define SALSA64_RI_NREGS    8
 #define SALSA64_RDRAM_NREGS    16
@@ -596,5 +625,7 @@ void salsa64_si_write(struct salsa64_bus *bus, uint32_t reg, uint32_t value);
 void salsa64_si_init(struct salsa64_bus *bus, struct salsa64_sched *sched);
 void salsa64_si_reset(struct salsa64_bus *bus);
 void salsa64_si_set_immediate(struct salsa64_bus *bus, bool immediate);
+/* Las dos operaciones con el ritmo fijo anterior (SALSA64_SI_DMA_CYCLES). */
+void salsa64_si_set_fixed(struct salsa64_bus *bus, bool fixed);
 
 #endif

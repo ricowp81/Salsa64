@@ -15,7 +15,7 @@ COMMON  := src/platform/ps3/log.c src/platform/ps3/rec_cache.c \
            src/frontend/romlist.c src/frontend/ziprom.c src/frontend/menu.c src/frontend/osd_fps.c src/frontend/pausectl.c src/frontend/cheats.c src/frontend/cover.c src/frontend/namematch.c src/frontend/dlutil.c src/frontend/i18n.c lib/rsxkit/src/text.c lib/rsxkit/src/ui_geom.c \
            src/frontend/filters/crt_params.c src/frontend/version.c src/frontend/mempakfile.c src/frontend/transferpakfile.c src/frontend/perfilado.c src/frontend/cuelgue.c src/frontend/scale_auto.c \
            $(filter-out tests/unit/main_host.c,$(patsubst $(R)/%,%,$(wildcard $(R)/tests/unit/*.c))) \
-           lib/rsxkit/src/fpgen.c src/frontend/ra_core.c $(RC_FILES)
+           lib/rsxkit/src/fpgen.c lib/rsxkit/src/sifm.c src/frontend/ra_core.c $(RC_FILES)
 # lib/rsxkit/src/fpgen.c (codificador de fragment programs, sin PSL1GHT) se
 # prueba aquí con el intérprete de tests/unit/test_fpgen.c, big-endian.
 ZLIB_PREFIX ?= $(PS3DEV)/portlibs/ppu

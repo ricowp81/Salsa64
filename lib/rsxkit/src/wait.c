@@ -46,6 +46,11 @@ bool rsxkit_lost(void)
 	return w.lost != 0;
 }
 
+void rsxkit_wait_set_lost(void)
+{
+	w.lost = 1;
+}
+
 static void regs(uint32_t *get, uint32_t *put)
 {
 	if (!ctrl)

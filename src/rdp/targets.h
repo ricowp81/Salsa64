@@ -143,6 +143,8 @@ struct rdp_targets {
 	int il_slot;
 	int32_t il_v0;
 	uint32_t il_y0;
+	bool il_weave;
+	uint32_t il_width, il_height, il_bpp;
 	uint32_t vi_width;      /* ancho del VI en el último campo con imagen */
 	uint32_t created;       /* superficies creadas (estadística) */
 	uint32_t readbacks;     /* copias a la RDRAM (estadística) */
@@ -291,6 +293,20 @@ uint32_t rdp_scale_pick_budget(uint32_t requested, uint32_t screen_h, uint32_t b
  * las campanadas). */
 int rdp_targets_get(struct rdp_targets *s, uint32_t addr, uint32_t width, uint32_t siz, uint32_t min_lh,
 		    bool *fresh);
+/* Por qué una color image no puede tener destino, o RDP_CIMG_OK. Las
+ * imposibles salen de comandos que la HLE interpretó mal (Zelda al abrir la
+ * pausa manda anchos de 1495 y 3770): ancho 0 o de más de 640, alto pedido
+ * de más de 480 y, con `rdram_size` distinto de 0, una que empieza fuera de
+ * la RDRAM (el RDP no tiene dónde escribirla; Indiana Jones pidió una vez
+ * 900000/455 con 8 MB y el RSX se colgó en esa tarea: docs/rsx-notes.md).
+ * Quien llama no la convierte en destino ni recicla una ranura por ella. */
+enum rdp_cimg_bad {
+	RDP_CIMG_OK = 0,
+	RDP_CIMG_WIDTH,   /* ancho 0 o > 640 */
+	RDP_CIMG_HEIGHT,  /* alto pedido > 480 */
+	RDP_CIMG_RDRAM,   /* empieza fuera de la RDRAM */
+};
+enum rdp_cimg_bad rdp_cimg_impossible(uint32_t addr, uint32_t width, uint32_t min_lh, uint32_t rdram_size);
 /* La ranura en uso que rdp_targets_get con esos mismos argumentos
  * reasignaría a otra imagen (la recicla o la hace crecer), o -1 si la
  * imagen ya existe o la ranura estaba libre. Sirve para copiar a la RDRAM
@@ -437,6 +453,54 @@ static inline bool rdp_guard_ok(const struct rdp_guard *g, const uint8_t *rdram,
 static inline void rdp_guard_wrote(struct rdp_guard *g, const uint8_t *rdram, uint32_t line)
 {
 	g->wrote[line] = rdp_guard_hash(rdram + (line << RDP_GUARD_SHIFT));
+}
+
+/* Lo que tomó otra color image después (complemento de la guarda).
+ *
+ * La huella `base` de una línea la renueva cualquier tarea cuyos dibujos
+ * puedan tocarla, aunque sea con otra color image: entonces ya incluye lo que
+ * el CPU escribió antes de esa tarea y la guarda no lo ve. FIFA 99 cambia de
+ * los framebuffers de 512 × 384 del menú a los de 480 × 360 del partido en la
+ * misma memoria: suelta los viejos, pide dos bloques al heap (la cabecera del
+ * segundo, en 0x1abc70, va justo después del primer framebuffer nuevo, que
+ * acaba en 0x1abc40) y la primera tarea del partido renueva la huella de la
+ * línea 0x1abc00; el espejo del último cuadro del menú, que llega después,
+ * pasaba la guarda y escribía negro (0x00010001) sobre la cabecera. Al
+ * acabar el partido el juego suelta ese bloque, lee el anterior en
+ * 0x00010001 y falla (AdEL en 0x10003): pantalla negra.
+ *
+ * Por eso el hilo de emulación anota también, por tarea, qué filas de qué
+ * color image (dirección y bytes por fila) pudieron tocar sus dibujos, y una
+ * copia tardía de la color image X dibujada por última vez en la tarea T no
+ * escribe las líneas que una color image distinta de X tocó en una tarea
+ * posterior a T: en la consola, eso que dibujó después (o lo que el CPU
+ * escribió antes de que lo dibujara) queda encima. La misma color image
+ * vuelta a dibujar no cuenta (eso ya lo cubre la guarda). */
+#define RDP_CLAIM_RING 64
+struct rdp_claim {
+	uint32_t lo, hi;  /* bytes [lo, hi) de la RDRAM */
+};
+struct rdp_claim_ring {
+	struct { uint32_t lo, hi, addr, line, task; } e[RDP_CLAIM_RING];
+	uint32_t n;  /* entradas escritas en total (las válidas: las últimas RDP_CLAIM_RING) */
+};
+/* Hilo de emulación: la tarea `task` dibujó en las filas [lo, hi) de la
+ * color image (addr, line bytes por fila). Se funde con otra entrada de la
+ * misma tarea y la misma color image. */
+void rdp_claim_note(struct rdp_claim_ring *r, uint32_t addr, uint32_t line, uint32_t lo, uint32_t hi, uint32_t task);
+/* Tramos de [lo, hi) que tocó una color image distinta de (addr, line) en
+ * una tarea posterior a `task`, hasta `max` (si son más, el último se
+ * agranda hasta cubrirlos). −1 si el anillo ya perdió entradas posteriores
+ * a `task` (no se sabe). */
+int rdp_claims_after(const struct rdp_claim_ring *r, uint32_t addr, uint32_t line, uint32_t lo, uint32_t hi,
+		     uint32_t task, struct rdp_claim *out, int max);
+/* ¿La línea `line` (dirección >> RDP_GUARD_SHIFT) toca alguno de los tramos? */
+static inline bool rdp_claimed(const struct rdp_claim *c, int n, uint32_t line)
+{
+	for (int i = 0; i < n; i++)
+		if (line >= c[i].lo >> RDP_GUARD_SHIFT && line <= (c[i].hi - 1) >> RDP_GUARD_SHIFT)
+			return true;
+	return false;
 }
 
 /* Un relleno sobre una color image alta que se reparte entre los destinos

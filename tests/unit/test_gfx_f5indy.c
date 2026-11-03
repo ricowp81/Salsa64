@@ -375,6 +375,63 @@ static void f5i_sublist(void)
 	CHECK_EQ(gs.prim, 0x55555555u);  /* la sublista corrió una vez y el comando que sigue ganó */
 }
 
+/* Una lista secundaria que acaba en un G_ENDDL con la palabra baja en 0 (Indiana Jones deja
+ * así algunas en 0x58C): termina ahí, como en el microcódigo real (salsa64-run --lle=all con la
+ * lista de un material cambiada así: el G_SETCIMG de detrás no llega al RDP; dentro de la lista,
+ * sí). Detrás van los vértices de 8 bytes del juego: (−80, 17, 136, 0) es FFB00011 00880000, un
+ * G_SETCIMG de 18 de ancho en 0x880000 (el de la PS3 real). Con GFX_JOB_F5_SUB_OLD, como antes:
+ * se sigue hasta el B8 … FFFFFFFF y el vértice se ejecuta. */
+static void f5i_sublist_enddl(bool old)
+{
+	start();
+	setup();
+	const int16_t v[3][3] = { { -64, -64, 0 }, { 64, -64, 0 }, { 0, 64, 0 } };
+	load_vertices(v, 3);
+	put_colors(4);
+	uint32_t sub = data_alloc(48);
+	t_wr32(sub, 0), t_wr32(sub + 4, 0);
+	t_wr32(sub + 8, 0xFA000000), t_wr32(sub + 12, 0x11223344);
+	t_wr32(sub + 16, 0xB8000000), t_wr32(sub + 20, 0);
+	t_wr32(sub + 24, 0xFFB00011), t_wr32(sub + 28, 0x00880000);  /* un vértice, no un comando */
+	t_wr32(sub + 32, 0xB8000000), t_wr32(sub + 36, 0xFFFFFFFFu);
+	dl(0xBC00058C, sub);
+	tri1(0, 1, 2, 0, 1, 2);
+	dl(0xB8000000, 0);
+	memset(&job, 0, sizeof job);
+	job.rdram_ea = (uint64_t)(uintptr_t)t_n64.bus.rdram;
+	job.rdram_size = t_n64.bus.rdram_size;
+	job.vtx_ea = (uint64_t)(uintptr_t)out_vtx;
+	job.vtx_cap = sizeof out_vtx;
+	job.cmd_ea = (uint64_t)(uintptr_t)out_cmd;
+	job.cmd_cap = sizeof out_cmd;
+	job.tex_ea = (uint64_t)(uintptr_t)out_tex;
+	job.tex_cap = sizeof out_tex;
+	job.gbi = SALSA64_GBI_F5INDY;
+	job.dl = DL_PA;
+	job.flags = old ? GFX_JOB_F5_SUB_OLD : 0;
+	gfx_run(&gs, &job, &res);
+	CHECK_EQ(res.triangles, 1);
+	CHECK_EQ(gs.prim, 0x11223344u);  /* lo de antes del G_ENDDL corrió */
+	CHECK((res.flags & GFX_RES_F5_SUB_END) != 0);
+	if (old) {
+		CHECK_EQ(gs.cimg_addr, 0x880000u);
+		CHECK_EQ(gs.cimg_width, 18);
+	} else {
+		CHECK_EQ(gs.cimg_addr, 0x100000u);  /* el de setup */
+		CHECK_EQ(gs.cimg_width, 320);
+	}
+}
+
+static void f5i_sublist_enddl_new(void)
+{
+	f5i_sublist_enddl(false);
+}
+
+static void f5i_sublist_enddl_old(void)
+{
+	f5i_sublist_enddl(true);
+}
+
 /* Un rectángulo de textura (E4) de 16 bytes: las palabras de s, t y dsdx, dtdy siguen sin opcode. */
 static void f5i_texrect(void)
 {
@@ -465,6 +522,8 @@ void t_suite_gfx_f5indy(void)
 	RUN(f5i_dma_segmented);
 	RUN(f5i_light_basic);
 	RUN(f5i_sublist);
+	RUN(f5i_sublist_enddl_new);
+	RUN(f5i_sublist_enddl_old);
 	RUN(f5i_texrect);
 	RUN(f5i_gen_vertices);
 	RUN(f5i_particles);

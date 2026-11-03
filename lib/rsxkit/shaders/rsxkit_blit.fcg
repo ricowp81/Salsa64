@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: MIT */
-/* rsxkit — fragment program del blit 2D: la textura con alfa 1. */
+/* rsxkit — fragment program del blit 2D: la textura con el alfa que da su
+ * remapeo (1 en los formatos de la tabla de fb.c; el suyo en RSXKIT_ARGB8888
+ * y en los blits hacia destinos con alfa, rsxkit_blit_alpha). */
 void main(float2 texcoord : TEXCOORD0, uniform sampler2D texture : TEXUNIT0,
           out float4 color : COLOR)
 {
-	color = float4(tex2D(texture, texcoord).rgb, 1.0);
+	color = tex2D(texture, texcoord);
 }

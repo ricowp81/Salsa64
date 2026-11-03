@@ -248,10 +248,25 @@ rsxkit_program *rsxkit_program_create(const void *fpo)
 	return NULL;
 }
 
+int rsxkit_program_bind_3d(rsxkit_program *p)
+{
+	if (!p || !p->used) return RSXKIT_EARG;
+	rsxLoadFragmentProgramLocation(rsxkit_g.ctx, &p->hdr, p->offset, GCM_LOCATION_RSX);
+	return RSXKIT_OK;
+}
+
+void rsxkit_program_used_3d(rsxkit_program *p)
+{
+	uint32_t seq = ++post.seq;
+	rsxSetWriteBackendLabel(rsxkit_g.ctx, RSXKIT_LABEL_POST, seq);
+	p->last_use = seq;
+}
+
 void rsxkit_program_destroy(rsxkit_program *p)
 {
 	if (!p || !p->used)
 		return;
+	rsxkit_3d_flush_use();
 	wait_use(p->last_use);
 	rsxkit_fp_untrack(p->buf);
 	rsxFree(p->buf);
@@ -382,6 +397,8 @@ static void set_input(gcmContextData *ctx, u8 unit, const rsxkit_post_input *in)
 	u8 wrap = in->wrap == RSXKIT_POST_BORDER   ? GCM_TEXTURE_BORDER
 		  : in->wrap == RSXKIT_POST_REPEAT ? GCM_TEXTURE_REPEAT
 						   : GCM_TEXTURE_CLAMP_TO_EDGE;
+	if (in->refresh)
+		rsxTextureControl(ctx, unit, GCM_FALSE, 0, 12 << 8, GCM_TEXTURE_MAX_ANISO_1);
 	rsxLoadTexture(ctx, unit, &tex);
 	rsxTextureControl(ctx, unit, GCM_TRUE, 0 << 8, 12 << 8, GCM_TEXTURE_MAX_ANISO_1);
 	rsxTextureFilter(ctx, unit, 0, filt, filt, GCM_TEXTURE_CONVOLUTION_QUINCUNX);
@@ -449,16 +466,24 @@ int rsxkit_post_run(const rsxkit_post_pass *p)
 {
 	struct rsxkit_state *g = &rsxkit_g;
 	gcmContextData *ctx = g->ctx;
-	if (!p || !p->program || !p->program->used || p->inputs > RSXKIT_POST_INPUTS || (p->out && !p->out->used))
+	if (!p || !p->program || !p->program->used || p->inputs > RSXKIT_POST_INPUTS || (p->out && !p->out->used) ||
+	    (p->out && p->out_target))
 		return RSXKIT_EARG;
 	for (uint32_t i = 0; i < p->inputs; i++)
 		if (p->in[i].surface && !p->in[i].surface->used)
 			return RSXKIT_EARG;
 	post_init();
+	rsxkit_trace_repeat("pasada", "%u en total; la última con %u entradas", 1, p->inputs, 0, 0);
 	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
 	rsxkit_leave_3d();
 	uint32_t sw, sh;
-	int rc = bind_output(p->out, &sw, &sh);
+	int rc;
+	if (p->out_target) {
+		rsxkit_target_size(p->out_target, &sw, &sh);
+		rc = rsxkit_bind(p->out_target, NULL, (float)sw, (float)sh);
+		if (rc == RSXKIT_OK)
+			rsxkit_set_2d_state_size(sw, sh);
+	} else rc = bind_output(p->out, &sw, &sh);
 	if (rc != RSXKIT_OK)
 		return rc;
 	rsxkit_rect r = p->rect;
@@ -543,6 +568,7 @@ int rsxkit_post_run_mesh(const rsxkit_post_pass *p, const rsxkit_post_mesh *m)
 		if (p->in[i].surface && !p->in[i].surface->used)
 			return RSXKIT_EARG;
 	post_init();
+	rsxkit_trace_repeat("pasada", "%u en total; la última con %u entradas", 1, p->inputs, 0, 0);
 	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
 	rsxkit_leave_3d();
 	uint32_t sw, sh;

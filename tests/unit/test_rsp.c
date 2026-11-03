@@ -242,6 +242,112 @@ static void rsp_gfx_task_polls(void)
 	salsa64_rsp_set_gfx(bus, NULL);
 }
 
+/* Ritmo del RCP (gfx_model): una tarea que la HLE termina pronto no termina
+ * para el juego antes de lo que el backend estima que tardaría la consola
+ * (por el porcentaje), y la que tardaría menos que gfx_cycles termina como
+ * siempre. También al recogerla antes (salsa64_rsp_quiesce, estados). */
+static uint32_t fake_model;
+
+static uint32_t fake_cycles(void *ctx)
+{
+	(void)ctx;
+	return fake_model;
+}
+
+static const struct salsa64_gfx_backend model_backend = { .start = fake_start, .finish = fake_finish,
+							  .cycles = fake_cycles };
+
+static void rsp_gfx_model(void)
+{
+	struct salsa64_bus *bus = &t_n64.bus;
+	memset(&fake, 0, sizeof fake);
+	salsa64_rsp_set_gfx(bus, &model_backend);
+	salsa64_mi_clear(bus, SALSA64_IRQ_SP);
+	salsa64_mi_clear(bus, SALSA64_IRQ_DP);
+	put_text(0x5000 + 0x123, "Salsa64 GBI F3DEX2");
+	put_task(SALSA64_TASK_GFX, 0x5000, 0x6000);
+	bus->rsp.gfx_model = 150;
+	fake_model = 400000;  /* ×1,5 = 600000 ciclos */
+	uint32_t held0 = bus->rsp.stats.model_held;
+	wr(SP_REG(SALSA64_SP_STATUS), 0x8);
+	wr(SP_REG(SALSA64_SP_STATUS), 0x1 | 0x4 | 0x100);
+	CHECK_EQ(fake.starts, 1);
+	uint64_t t0 = CPU->cycles;
+	CHECK_EQ(bus->rsp.gfx_start, t0);
+	salsa64_sched_dispatch(&t_n64.sched, t0 + bus->rsp.gfx_cycles);
+	/* La HLE ya terminó (finish), pero el juego todavía no lo ve. */
+	CHECK_EQ(fake.finishes, 1);
+	CHECK_EQ(bus->rsp.busy, SALSA64_TASK_GFX);
+	CHECK(bus->rsp.collected);
+	CHECK_EQ(rd(SP_REG(SALSA64_SP_STATUS)) & SALSA64_SP_STATUS_HALT, 0);
+	CHECK_EQ(bus->mi.intr & (1u << SALSA64_IRQ_SP), 0);
+	CHECK_EQ(t_n64.sched.when[SALSA64_EV_SP_TASK], t0 + 600000);
+	CHECK_EQ(bus->rsp.stats.model_held, held0 + 1);
+	/* Una tarea nueva no arranca mientras tanto. */
+	wr(SP_REG(SALSA64_SP_STATUS), 0x1 | 0x4);
+	CHECK_EQ(fake.starts, 1);
+	salsa64_sched_dispatch(&t_n64.sched, t0 + 600000);
+	CHECK_EQ(fake.finishes, 1);  /* no se recoge dos veces */
+	CHECK_EQ(bus->rsp.busy, 0);
+	CHECK_EQ(bus->mi.intr, 1u << SALSA64_IRQ_SP);
+	salsa64_sched_dispatch(&t_n64.sched, t0 + 600000 + bus->rsp.dp_cycles);
+	CHECK_EQ(bus->mi.intr, (1u << SALSA64_IRQ_SP) | (1u << SALSA64_IRQ_DP));
+
+	/* Más corta que gfx_cycles: termina a la hora de siempre. */
+	wr(SP_REG(SALSA64_SP_STATUS), 0x8);
+	salsa64_mi_clear(bus, SALSA64_IRQ_DP);
+	fake_model = 1000;
+	wr(SP_REG(SALSA64_SP_STATUS), 0x1 | 0x4 | 0x100);
+	CHECK_EQ(fake.starts, 2);
+	t0 = CPU->cycles;
+	salsa64_sched_dispatch(&t_n64.sched, t0 + bus->rsp.gfx_cycles);
+	CHECK_EQ(bus->rsp.busy, 0);
+	CHECK_EQ(bus->mi.intr, 1u << SALSA64_IRQ_SP);
+	CHECK_EQ(bus->rsp.stats.model_held, held0 + 1);
+
+	/* Recogida antes (un estado guardado): el fin queda a la hora del modelo. */
+	wr(SP_REG(SALSA64_SP_STATUS), 0x8);
+	fake_model = 200000;
+	bus->rsp.gfx_model = 100;
+	wr(SP_REG(SALSA64_SP_STATUS), 0x1 | 0x4 | 0x100);
+	CHECK_EQ(fake.starts, 3);
+	t0 = CPU->cycles;
+	CHECK(salsa64_rsp_quiesce(bus));
+	CHECK_EQ(fake.finishes, 3);
+	CHECK_EQ(t_n64.sched.when[SALSA64_EV_SP_TASK], t0 + 200000);
+	salsa64_sched_dispatch(&t_n64.sched, t0 + bus->rsp.gfx_cycles);
+	CHECK_EQ(bus->rsp.busy, SALSA64_TASK_GFX);
+	salsa64_sched_dispatch(&t_n64.sched, t0 + 200000);
+	CHECK_EQ(bus->rsp.busy, 0);
+	CHECK_EQ(fake.finishes, 3);
+	salsa64_sched_dispatch(&t_n64.sched, t0 + 200000 + bus->rsp.dp_cycles);
+	wr(SP_REG(SALSA64_SP_STATUS), 0x8);
+	salsa64_mi_clear(bus, SALSA64_IRQ_DP);
+	bus->rsp.gfx_model = 0;
+	salsa64_rsp_set_gfx(bus, NULL);
+}
+
+/* El modelo crece con lo que hace la tarea y una tarea vacía no cuesta nada. */
+static void rsp_gfx_model_cycles(void)
+{
+	struct gfx_result r;
+	memset(&r, 0, sizeof r);
+	uint32_t empty = salsa64_gfx_model_cycles(&r, SALSA64_GBI_F3DEX2);
+	CHECK_EQ(empty, 0);
+	r.commands = 3000;
+	r.triangles = 500;
+	uint32_t big = salsa64_gfx_model_cycles(&r, SALSA64_GBI_F3DEX2);
+	CHECK(big > empty);
+	r.triangles = 1000;
+	CHECK(salsa64_gfx_model_cycles(&r, SALSA64_GBI_F3DEX2) > big);
+	r.commands = 6000;
+	CHECK(salsa64_gfx_model_cycles(&r, SALSA64_GBI_F3DEX2) > big);
+	/* Fast3D tarda más que F3DEX2 en lo mismo; lo que no se midió, nada. */
+	CHECK(salsa64_gfx_model_cycles(&r, SALSA64_GBI_F3D) > salsa64_gfx_model_cycles(&r, SALSA64_GBI_F3DEX2));
+	CHECK_EQ(salsa64_gfx_model_cycles(&r, SALSA64_GBI_F5ROGUE), 0);
+	CHECK_EQ(salsa64_gfx_model_cycles(&r, SALSA64_GBI_UNKNOWN), 0);
+}
+
 /* Una lista cortada por la HLE (búfer lleno, sin G_RDPFULLSYNC) también
  * termina con la interrupción del DP: el juego espera al RDP por cada tarea
  * gráfica (Zelda OoT: «RCP is HUNG UP» a los 3 s sin ella). */
@@ -638,6 +744,78 @@ static void rsp_detect_animal_crossing(void)
 	memset(p, 0, size);
 }
 
+/* Conker (#68): un mismo código con ocho segmentos de datos («F3DEX», «F3DEXBS», «F3DEXBG» y «F3DEXBGBS», con y
+ * sin «.NoN»); desde el ascensor del final de Heist el juego usa «F3DEX.NoN», que por el texto parecía un F3DEX2.
+ * Por el CRC de su código (palabras del host) todos son F3DEXBG, con el plano cercano según su nombre; con el
+ * interruptor conker-ucode-viejo, solo el texto, como antes. Código fabricado para que dé ese CRC y textos con el
+ * formato de los suyos (sin copiar sus datos). */
+static void rsp_detect_gbi_conker(void)
+{
+	struct salsa64_bus *bus = &t_n64.bus;
+	const uint32_t code = 0x100000, size = 0x1000;  /* donde put_task dice que está el código */
+	uint8_t *p = bus->rdram + code, tail[4];
+	uint32_t state = 0xFFFFFFFFu;
+	for (uint32_t i = 0; i < size - 4; i++)
+		for (int k = 0; k < 8; k++)
+			state = (state >> 1) ^ (0xEDB88320u & (0u - (state & 1)));
+	memset(p, 0, size);
+	crc32_force(state, 0x1B4ACE88u, tail);
+	for (int i = 0; i < 4; i++)
+		p[size - 4 + (3 - i)] = tail[i];
+	CHECK_EQ(salsa64_crc32_words_swapped(p, size), 0x1B4ACE88u);
+
+	static const struct {
+		const char *text;
+		bool nonear;
+		enum salsa64_gbi old;  /* con conker-ucode-viejo */
+	} cases[] = {
+		{ "RSP Gfx ucode F3DEX.NoN   fifo 2.08 ", true, SALSA64_GBI_F3DEX2 },
+		{ "RSP Gfx ucode F3DEX       fifo 2.08 ", false, SALSA64_GBI_F3DEX2 },
+		{ "RSP Gfx ucode F3DEXBS.NoN fifo 2.08 ", true, SALSA64_GBI_F3DEX2 },
+		{ "RSP Gfx ucode F3DEXBS     fifo 2.08 ", false, SALSA64_GBI_F3DEX2 },
+		{ "RSP Gfx ucode F3DEXBG.NoN fifo 2.08 ", true, SALSA64_GBI_F3DEXBG },
+		{ "RSP Gfx ucode F3DEXBG     fifo 2.08 ", false, SALSA64_GBI_F3DEXBG },
+		{ "RSP Gfx ucode F3DEXBGBS.Nofifo 2.08 ", true, SALSA64_GBI_F3DEXBG },
+		{ "RSP Gfx ucode F3DEXBGBS   fifo 2.08 ", false, SALSA64_GBI_F3DEXBG },
+	};
+	struct salsa64_gfx_backend on = fake_backend, old = fake_backend;
+	old.conker_text_only = true;
+	for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+		memset(bus->rdram + 0x5000, 0, 0x800);
+		put_text(0x5040, cases[c].text);
+		put_task(SALSA64_TASK_GFX, 0x5000, 0x6000);
+		struct salsa64_task task;
+		salsa64_rsp_read_task(bus, &task);
+		salsa64_rsp_set_gfx(bus, &on);
+		CHECK_EQ(salsa64_rsp_detect_gbi(bus, &task), SALSA64_GBI_F3DEXBG);
+		/* El plano cercano llega en la tarea que arranca. */
+		memset(&fake, 0, sizeof fake);
+		wr(SP_REG(SALSA64_SP_STATUS), 0x1 | 0x4);
+		CHECK_EQ(fake.starts, 1);
+		CHECK_EQ(fake.gbi, SALSA64_GBI_F3DEXBG);
+		struct gfx_job job;
+		salsa64_gfx_job(&job, bus, &fake.task, fake.gbi);
+		CHECK_EQ((job.flags & GFX_JOB_NONEAR) != 0, cases[c].nonear);
+		salsa64_sched_dispatch(&t_n64.sched, CPU->cycles + bus->rsp.gfx_cycles + bus->rsp.dp_cycles);
+		wr(SP_REG(SALSA64_SP_STATUS), 0x8);
+		bus->mi.intr = 0;
+		salsa64_rsp_set_gfx(bus, &old);
+		CHECK_EQ(salsa64_rsp_detect_gbi(bus, &task), cases[c].old);
+	}
+	/* Otro código con el mismo texto: lo de siempre. */
+	p[17] ^= 1;
+	salsa64_rsp_set_gfx(bus, &on);
+	struct salsa64_task task;
+	salsa64_rsp_read_task(bus, &task);
+	CHECK_EQ(salsa64_rsp_detect_gbi(bus, &task), SALSA64_GBI_F3DEXBG);  /* el último texto: «F3DEXBGBS» */
+	memset(bus->rdram + 0x5000, 0, 0x800);
+	put_text(0x5040, cases[0].text);
+	CHECK_EQ(salsa64_rsp_detect_gbi(bus, &task), SALSA64_GBI_F3DEX2);
+	salsa64_rsp_set_gfx(bus, NULL);
+	memset(p, 0, size);
+	memset(bus->rdram + 0x5000, 0, 0x800);
+}
+
 static void rsp_detect_gbi(void)
 {
 	/* Solo el formato de los textos de identificación, sin copiarlos. */
@@ -833,6 +1011,8 @@ void t_suite_rsp(void)
 	RUN(rsp_gfx_task);
 	RUN(rsp_gfx_task_polls);
 	RUN(rsp_gfx_task_cut);
+	RUN(rsp_gfx_model);
+	RUN(rsp_gfx_model_cycles);
 	RUN(rsp_audio_task);
 	RUN(rsp_other_task);
 	RUN(rsp_detect_gbi);
@@ -842,6 +1022,7 @@ void t_suite_rsp(void)
 	RUN(rsp_detect_gbi_dkr);
 	RUN(rsp_detect_gbi_acclaim);
 	RUN(rsp_detect_gbi_eurocom);
+	RUN(rsp_detect_gbi_conker);
 	RUN(rsp_detect_animal_crossing);
 	RUN(rsp_dpc_from_cpu);
 	RUN(rsp_dpc_split_command);

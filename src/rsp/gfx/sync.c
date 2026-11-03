@@ -36,6 +36,51 @@ uint32_t salsa64_gfx_task_flags(const struct gfx_result *res)
 	return f;
 }
 
+/* Ritmo del RCP: ciclos del VR4300 (93,75 MHz) por comando de la lista, por
+ * triángulo que la HLE dibujó y por vértice cargado, por familia de
+ * microcódigo. Mínimos cuadrados sin término fijo (y sin coeficientes
+ * negativos) sobre el tiempo del RSP real en ares, de su arranque a la
+ * interrupción del DP sin los tramos cedidos al audio, de 62 tareas volcadas
+ * en ares y repetidas con la HLE (docs/ritmo-rcp.md):
+ *   Fast3D: Super Mario 64, Shadows of the Empire y GoldenEye (32 tareas,
+ *     error medio 3 %, máximo 12 %);
+ *   F3DEX 1.x: F-Zero X (2.03, 10 tareas, error medio 5 %). Mario Kart 64
+ *     (0.95) tarda el doble en lo mismo: con estos queda por debajo, nunca
+ *     más lento que en ares;
+ *   F3DEX2: Zelda OoT (F3DZEX 2.06H, 10 tareas, error medio 2 %).
+ * Lo que no se midió (Factor 5, Turbo3D, S2DEX sueltos) da 0: sin ritmo. El
+ * RDP de ares termina en el acto, así que lo que tarda el RDP real (relleno)
+ * no está en estas cifras: es una cota inferior de la consola. */
+uint32_t salsa64_gfx_model_cycles(const struct gfx_result *res, enum salsa64_gbi gbi)
+{
+	uint32_t per_cmd, per_tri, per_vtx;
+	switch (gbi) {
+	case SALSA64_GBI_F3D:
+	case SALSA64_GBI_F3DWR:
+	case SALSA64_GBI_F3DPD:
+	case SALSA64_GBI_F3DDKR:
+	case SALSA64_GBI_F3DJFG:
+	case SALSA64_GBI_TURBO3D_F3D:
+		per_cmd = 154, per_tri = 412, per_vtx = 202;
+		break;
+	case SALSA64_GBI_F3DEX:
+		per_cmd = 41, per_tri = 124, per_vtx = 158;
+		break;
+	case SALSA64_GBI_F3DEX2:
+	case SALSA64_GBI_F3DZEX2:
+	case SALSA64_GBI_F3DEXBG:
+	case SALSA64_GBI_F3DEX2ACCLAIM:
+	case SALSA64_GBI_F3DEX2EUROCOM:
+		per_cmd = 59, per_tri = 134, per_vtx = 99;
+		break;
+	default:
+		return 0;
+	}
+	uint64_t c = (uint64_t)res->commands * per_cmd + (uint64_t)res->triangles * per_tri +
+		     (uint64_t)res->vertices * per_vtx;
+	return c > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)c;
+}
+
 /* Un relleno en modo FILL: cada byte de la imagen toma el byte del color
  * de 32 bits que le toca por su dirección (el RDP repite el color en
  * palabras de 64 bits), así sirve para píxeles de 8, 16 y 32 bits. */
@@ -103,6 +148,12 @@ static uint32_t sync_finish(void *ctx)
 	salsa64_gfx_rdram_fills(s->bus, &s->job, &s->res);
 	s->sink.done(s->sink.ctx, &s->job, &s->res);
 	return salsa64_gfx_task_flags(&s->res);
+}
+
+static uint32_t sync_cycles(void *ctx)
+{
+	struct salsa64_gfx_sync *s = ctx;
+	return salsa64_gfx_model_cycles(&s->res, (enum salsa64_gbi)s->job.gbi);
 }
 
 void gfx_state_save(const struct gfx_state *g, uint8_t *out)
@@ -177,6 +228,7 @@ void salsa64_gfx_sync_init(struct salsa64_gfx_sync *s, struct gfx_state *state, 
 	s->backend.ctx = s;
 	s->backend.start = sync_start;
 	s->backend.finish = sync_finish;
+	s->backend.cycles = sync_cycles;
 	s->backend.state_size = GFX_STATE_BYTES;
 	s->backend.save_state = sync_save_state;
 	s->backend.load_state = sync_load_state;

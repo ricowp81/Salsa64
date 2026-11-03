@@ -49,6 +49,9 @@ struct rsxkit_state {
 
 extern struct rsxkit_state rsxkit_g;
 
+int rsxkit_program_bind_3d(rsxkit_program *p);
+void rsxkit_program_used_3d(rsxkit_program *p);
+
 /* Destino ligado con rsxkit_bind (target.c). */
 struct rsxkit_bound {
 	struct rsxkit_target *target;
@@ -77,6 +80,16 @@ void rsxkit_wait_label(uint8_t index, uint32_t value);
 void rsxkit_wait_begin(rsxkit_wait_kind kind, const char *what, uint32_t label, uint32_t expected, uint32_t current);
 bool rsxkit_wait_tick(uint32_t current);
 void rsxkit_wait_end(void);
+/* rsxkit_abandon: como si un gancho hubiera abandonado una espera. */
+void rsxkit_wait_set_lost(void);
+/* Diagnóstico (diag.c): el aviso de excepciones del sistema y el rastro de
+ * operaciones. rsxkit_trace_note anota una operación con su offset en el
+ * búfer de comandos (antes de escribir sus órdenes); rsxkit_trace_repeat
+ * junta las seguidas iguales (dibujos) en una entrada. `fmt` es para a..d. */
+void rsxkit_diag_init(void);
+void rsxkit_diag_shutdown(void);
+void rsxkit_trace_note(const char *op, const char *fmt, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+void rsxkit_trace_repeat(const char *op, const char *fmt, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
 /* Viewport y estado fijo del dibujo 2D sobre la superficie en curso. */
 void rsxkit_set_2d_state(void);
 /* Vuelve a la pantalla (búfer trasero) como superficie, con el estado 2D. */
@@ -85,6 +98,11 @@ void rsxkit_fb_shutdown(void);
 /* Antes de dibujar en modo inmediato con otros programas: apaga los
  * arreglos de vértices del 3D y olvida su estado. */
 void rsxkit_leave_3d(void);
+/* Escribe la etiqueta de uso del programa 3D con dibujos pendientes. */
+void rsxkit_3d_flush_use(void);
+/* Olvida el arreglo de vértices de rsxkit_vertices (se liberó su memoria):
+ * hasta el próximo rsxkit_vertices no se dibuja. */
+void rsxkit_3d_forget_vertices(void);
 /* Olvida todo el estado del RSX que rsxkit da por puesto (arreglos de
  * vértices, programas, estado fijo y constantes del 3D, superficie): el
  * próximo dibujo lo manda de nuevo. Después de cada flip (frame_end). */
@@ -95,13 +113,18 @@ void rsxkit_post_shutdown(void);
 /* Copia un fragment program a la memoria del RSX, con interpolación de
  * perspectiva en todas sus entradas (fprog.c). NULL si no hay memoria. */
 void *rsxkit_fp_upload(rsxFragmentProgram *fp, u32 *offset);
+/* Igual, pero las instrucciones que leen TEXCOORD1..7 (los términos X_j)
+ * quedan sin corrección de perspectiva: el sombreado lineal en pantalla de
+ * rsxkit_affine_shade (el vertex program multiplica los X_j por w). */
+void *rsxkit_fp_upload_affine(rsxFragmentProgram *fp, u32 *offset);
 /* Programas subidos con rsxkit_fp_upload o registrados con
  * rsxkit_fp_track cuya copia en la memoria del RSX cambió; con `repair`,
  * los vuelve a copiar. */
 int rsxkit_fp_verify(int repair);
 /* Registra (o, si ya estaba, vuelve a sumar) la copia `buf` de un programa
- * para rsxkit_fp_verify, que la restaura desde `src` (con `fix`, limpiando
- * la corrección de perspectiva como rsxkit_fp_upload). */
+ * para rsxkit_fp_verify, que la restaura desde `src` (`fix` 1: limpiando la
+ * corrección de perspectiva como rsxkit_fp_upload; 2: como
+ * rsxkit_fp_upload_affine). */
 void rsxkit_fp_track(void *buf, const void *src, u32 size, int fix);
 void rsxkit_fp_untrack(void *buf);
 void rsxkit_fp_fix_perspective(void *ucode, u32 size);

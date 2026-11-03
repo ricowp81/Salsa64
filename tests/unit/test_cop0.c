@@ -126,6 +126,86 @@ static void count_half_rate(void)
 	CHECK_EQ((uint32_t)(R[T1] - R[T0]), 10);
 }
 
+/* ---- Barrido de la caché de datos (salsa64_cpu_set_dcache_sweep) ---------- */
+
+#define CACHE(op, base, off) M_I(0x2F, base, op, off)
+#define DC_IWBINV 0x01  /* Index_Writeback_Invalidate, caché de datos */
+#define DC_HWB    0x19  /* Hit_Writeback, caché de datos */
+
+/* Solo CACHE 0x01 sobre la línea 0 (cualquier dirección con los bits 12–4
+ * en 0) empieza un barrido y cobra SALSA64_DCACHE_SWEEP_CYCLES; las otras
+ * líneas y las otras operaciones cuestan un ciclo, como antes. */
+static void dcache_sweep_cost(void)
+{
+	CPU->dcache_sweeps = 0;
+	R[T0] = 0xFFFFFFFF80000000ull;
+	T_LOAD(CACHE(DC_IWBINV, T0, 16), CACHE(DC_HWB, T0, 0), CACHE(DC_IWBINV, T0, 0x2000), ADDIU(T1, ZERO, 7));
+	uint64_t c0 = CPU->cycles;
+	t_step(1);
+	t_step(1);
+	CHECK_EQ(CPU->cycles - c0, 2);
+	CHECK_EQ(CPU->dcache_sweeps, 0);
+	t_step(1);
+	CHECK_EQ(CPU->cycles - c0, 3 + SALSA64_DCACHE_SWEEP_CYCLES);
+	CHECK_EQ(CPU->dcache_sweeps, 1);
+	CHECK_EQ(CPU->pc, T_CODE + 12);
+	t_step(1);
+	CHECK_EQ(R[T1], 7);
+}
+
+/* osWritebackDCacheAll de libultra: las 512 líneas desde 0x80000000. Un
+ * barrido, 2052 instrucciones y su costo una sola vez; con el recompilador,
+ * t_step cuenta ciclos y tiene que acabar justo después del bucle. */
+static void dcache_sweep_loop(void)
+{
+	CPU->dcache_sweeps = 0;
+	T_LOAD(LUI(T0, 0x8000), ADDIU(T2, ZERO, 0x2000), ADDU(T1, T0, T2), ADDIU(T1, T1, -16),
+	       CACHE(DC_IWBINV, T0, 0), SLTU(AT, T0, T1), BNE(AT, ZERO, -3), ADDIU(T0, T0, 16),
+	       ADDIU(T3, ZERO, 1));
+	uint64_t c0 = CPU->cycles;
+	t_step(CPU->rec ? 2052 + SALSA64_DCACHE_SWEEP_CYCLES : 2052);
+	CHECK_EQ(CPU->pc, T_CODE + 32);
+	CHECK_EQ(CPU->cycles - c0, 2052 + SALSA64_DCACHE_SWEEP_CYCLES);
+	CHECK_EQ(CPU->dcache_sweeps, 1);
+	CHECK_EQ(R[T0], 0xFFFFFFFF80002000ull);
+	t_step(1);
+	CHECK_EQ(R[T3], 1);
+}
+
+/* En el delay slot de un salto tomado: el costo y después el destino. Count
+ * avanza con los ciclos cobrados. */
+static void dcache_sweep_delay_slot(void)
+{
+	CPU->dcache_sweeps = 0;
+	R[T0] = 0xFFFFFFFF80004000ull;
+	T_LOAD(BEQ(ZERO, ZERO, 2), CACHE(DC_IWBINV, T0, 0), ADDIU(T1, ZERO, 1), ADDIU(T2, ZERO, 2));
+	uint64_t c0 = CPU->cycles;
+	uint32_t count0 = salsa64_cpu_count(CPU);
+	t_step(CPU->rec ? 2 + SALSA64_DCACHE_SWEEP_CYCLES : 2);
+	CHECK_EQ(CPU->cycles - c0, 2 + SALSA64_DCACHE_SWEEP_CYCLES);
+	CHECK_EQ(CPU->pc, T_CODE + 12);
+	CHECK_EQ(CPU->dcache_sweeps, 1);
+	CHECK(salsa64_cpu_count(CPU) - count0 >= SALSA64_DCACHE_SWEEP_CYCLES / 2);
+	t_step(1);
+	CHECK_EQ(R[T1], 0);
+	CHECK_EQ(R[T2], 2);
+}
+
+/* sin-barrido-cache: CACHE vuelve a ser gratis. */
+static void dcache_sweep_off(void)
+{
+	salsa64_cpu_set_dcache_sweep(CPU, false);
+	CPU->dcache_sweeps = 0;
+	R[T0] = 0xFFFFFFFF80000000ull;
+	T_LOAD(CACHE(DC_IWBINV, T0, 0), ADDIU(T1, ZERO, 3));
+	uint64_t c0 = CPU->cycles;
+	t_step(2);
+	CHECK_EQ(CPU->cycles - c0, 2);
+	CHECK_EQ(CPU->dcache_sweeps, 0);
+	CHECK_EQ(R[T1], 3);
+	salsa64_cpu_set_dcache_sweep(CPU, true);
+}
+
 /* MFC0 y DMFC0 de cada registro (Random aparte): lo mismo que
  * salsa64_cpu_cop0_read, con signo desde 32 bits y en 64. Los campos llevan
  * valores con la mitad alta y el bit 31 distintos. */
@@ -758,6 +838,10 @@ void t_suite_cop0(void)
 	RUN(trap_immediate);
 	RUN(misaligned_fetch);
 	RUN(count_half_rate);
+	RUN(dcache_sweep_cost);
+	RUN(dcache_sweep_loop);
+	RUN(dcache_sweep_delay_slot);
+	RUN(dcache_sweep_off);
 	RUN(mfc0_reads_every_register);
 	RUN(mfc0_count_inside_block);
 	RUN(count_write);

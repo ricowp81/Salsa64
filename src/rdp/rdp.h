@@ -66,6 +66,21 @@ struct salsa64_rdp_stats {
 	 * destinos cebados desde la RDRAM. */
 	uint32_t readbacks, readback_waits, readback_late;
 	uint32_t big8_sync, big8_nosync;  /* copias big8 pedidas con y sin espera */
+	uint32_t big8_primes;             /* capas big8 cebadas desde la RDRAM (índices de 8 bits) */
+	/* Capas de 8 bits dibujadas en la RDRAM por el PPE (layer8.h): tareas,
+	 * dibujos, píxeles, esperas por la copia que se evitaron, destinos que
+	 * quedaron para el RSX y el tiempo (timebase). */
+	uint32_t layer8_tasks, layer8_draws, layer8_pixels, layer8_waits_avoided, layer8_refused;
+	uint64_t tb_layer8;
+	/* Por camino: rectángulos 1:1 (entero) y triángulos genéricos. */
+	uint32_t layer8_fast_pixels, layer8_slow_pixels;
+	uint64_t tb_layer8_fast, tb_layer8_slow;
+	/* Imágenes chicas de 32 bits dibujadas en la RDRAM por el PPE (mask32.h):
+	 * tareas, dibujos, píxeles, bytes escritos, bytes repuestos tras un
+	 * relleno, imágenes que quedaron para el RSX y el tiempo (timebase). */
+	uint32_t mask32_tasks, mask32_draws, mask32_pixels, mask32_bytes, mask32_restored, mask32_refused;
+	uint64_t tb_mask32;
+	uint32_t big8_copies, big8_changed;  /* copias big8 hechas y píxeles de la RDRAM que cambiaron */
 	uint64_t us_readback, us_readback_wait;
 	uint32_t mirrors, mirrors_skipped;  /* copias espejo (sin esperar) y las que no cupieron */
 	uint32_t frames_mirrored;           /* campos cuyo framebuffer se copió a la RDRAM */
@@ -76,12 +91,23 @@ struct salsa64_rdp_stats {
 	 * tomar las huellas al terminar cada tarea (hilo de emulación). */
 	uint32_t guard_lines, guard_copies;
 	uint64_t tb_guard_mark;  /* ticks del timebase */
+	/* Líneas que el espejo del framebuffer no escribió porque otra color
+	 * image las dibujó en una tarea posterior (rdp_claim_ring, targets.h),
+	 * y espejos con alguna así. */
+	uint32_t claim_lines, claim_copies;
 	uint32_t tall_fills;                /* rellenos de una color image más alta que 480 repartidos a sus destinos */
 	uint32_t tex_rsx, tex_rdram, tex_self, primes, prime_waits;
 	/* Alfa en los destinos (salsa64_rdp_target_alpha): destinos creados con
 	 * canal alfa, texturas leídas de uno de ellos, y rellenos / copias de
 	 * texturas que escribieron su alfa tal cual (rsxkit_draw.dst_alpha). */
 	uint32_t targets_alpha, tex_alpha, alpha_fills;
+	/* Dibujos de los ciclos 1 y 2 en un destino con alfa por el bit que
+	 * dejan (gfx_draw.cvg_bit, GFX_CVG_*: 1, el de la memoria, el del alfa,
+	 * el mayor); salsa64_rdp_set_cvg_alpha. */
+	uint32_t alpha_cvg[4];
+	/* Copias a la RDRAM de un destino con alfa que llevaron su alfa al bit
+	 * de RGBA5551 (salsa64_rdp_set_copy_alpha). */
+	uint32_t alpha_copies;
 	/* Texturas que la HLE no decodificó por venir de un destino
 	 * (GFX_TEX_TARGET) y que no se pudieron leer de él: decodificadas en el
 	 * PPE desde la RDRAM, y las que no cupieron en el arena (dibujo saltado). */
@@ -214,6 +240,34 @@ void salsa64_rdp_drop_targets(void);
 /* Las copias de las capas de 8 bits (big8) se esperan solo si el juego lo pide
  * (Yoshi's Story: las lee como CI8 desde la RDRAM); por omisión no se esperan. */
 void salsa64_rdp_set_big8_wait(bool wait);
+/* Las capas de 8 bits (big8) se ceban desde la RDRAM con el índice entero
+ * cuando su superficie es nueva o quedó vieja, como las de 16 bits; `false`
+ * (bandera gfx-big8-sin-cebar) vuelve a dejarlas con lo que tuviera el RSX. */
+void salsa64_rdp_set_big8_prime(bool prime);
+/* Las copias a la RDRAM de los destinos con alfa (salsa64_rdp_target_alpha)
+ * se leen del RSX en ARGB8888 y dejan el alfa en el bit de RGBA5551, como el
+ * RDP; `false` (bandera copia-sin-alfa) vuelve a copiarlas en RGB565 con
+ * alfa 1 (LEGO Racers, #34: autos lejanos dentro de un cuadro). */
+void salsa64_rdp_set_copy_alpha(bool on);
+/* Los dibujos de los ciclos 1 y 2 dejan en un destino con alfa la cobertura
+ * del RDP (gfx_draw.cvg_bit: casi siempre 1), no el alfa de la mezcla;
+ * `false` (bandera alfa-fragmento) vuelve al alfa del fragmento, como hasta
+ * la v0.2.15 (Dr. Mario 64, #62: paneles del fondo en blanco). */
+void salsa64_rdp_set_cvg_alpha(bool on);
+/* Las capas de 8 bits (big8) las dibuja el PPE en la RDRAM (layer8.h) y no
+ * pasan por el RSX ni por su copia; `false` (bandera gfx-capas8-rsx) vuelve
+ * a dibujarlas en el RSX y a esperar la copia. */
+void salsa64_rdp_set_layer8(bool on);
+/* Las imágenes chicas de 32 bits (hasta 64 × 64) y la de 8 bits en su misma
+ * memoria las dibuja el PPE en la RDRAM (mask32.h: la luz de los cuartos
+ * oscuros de Paper Mario) y no pasan por el RSX; `false` (bandera
+ * gfx-mascara32-rsx) las deja en el RSX como antes. */
+void salsa64_rdp_set_mask32(bool on);
+/* Blindaje del RSX (encendido por omisión; `false` con la bandera
+ * rsx-sin-blindaje): una color image que empieza fuera de la RDRAM no tiene
+ * destino (rdp_cimg_impossible: Indiana Jones pidió una vez 900000/455 y el
+ * RSX se colgó en esa tarea). */
+void salsa64_rdp_set_rsx_safe(bool on);
 /* Interruptor por juego: cada borrado de z espera al próximo destino que se
  * liga. LEGO Racers emite el borrado antes de cambiar de color image y
  * alterna una auxiliar de 32 x 32 y el framebuffer de 320 x 240 con la misma
@@ -256,6 +310,11 @@ size_t salsa64_rdp_interp_bytes(void);
  * uniones en T que el RDP tapa con la cobertura. Apagado por omisión: en
  * la PS3 a escala alta engordaba los modelos (docs/rsx-notes.md). */
 void salsa64_rdp_aa_edges(bool on);
+/* Interruptor: el RSX interpola el sombreado de los vértices (color, alfa y
+ * con ellos el factor de niebla) lineal en pantalla, como el RDP de la N64
+ * (rsxkit_affine_shade); va con el recorte de la HLE contra la caja del
+ * clip ratio (GFX_JOB_NO_RSP_CLIP lo apaga). Encendido por omisión. */
+void salsa64_rdp_affine_shade(bool on);
 /* Interruptor: los destinos de 16 bits que no son un framebuffer del VI
  * (render a textura) se crean con canal alfa (A8R8G8B8) y llevan el alfa de
  * la N64: 0 al borrarse con 0x0000, 1 en cada píxel dibujado (el alfa del
@@ -270,6 +329,11 @@ void salsa64_rdp_target_alpha(bool on);
  * del CPU (copias del RSX, VISCVG, DMA) en la RDRAM [watch_lo, watch_hi), y
  * si dejó la palabra 0x00010001. Fuera del bucle. */
 void salsa64_rdp_guard(bool on, uint32_t watch_lo, uint32_t watch_hi);
+/* El espejo del framebuffer no escribe las líneas que otra color image
+ * dibujó en una tarea posterior a la suya (rdp_claim_ring, targets.h; FIFA 99
+ * al acabar el partido): encendido por omisión; `on` false vuelve a como
+ * antes (solo la guarda). Fuera del bucle. */
+void salsa64_rdp_claims(bool on);
 /* Hilo de emulación: un DMA escribió la RDRAM [pa, pa + len); con
  * `gfx_in_flight`, mientras corría una tarea gráfica. Las copias de esa
  * tarea y de las anteriores no pisan ese tramo (targets.h, rdp_dma_ring). */
@@ -396,5 +460,14 @@ uint32_t salsa64_rdp_translating(const char **stage);
  * con las texturas de la caché copiadas al arena (el volcado no depende de
  * la caché). Espera al RSX. Para depurar. */
 bool salsa64_rdp_dump(const char *path);
+/* Lo mismo con la tarea que se está traduciendo (la de un RSX colgado), o la
+ * última si no hay ninguna; *task: su número. No espera al RSX ni lo toca:
+ * se puede llamar desde el gancho de las esperas o desde otro hilo con la
+ * traducción quieta. */
+bool salsa64_rdp_dump_current(const char *path, uint32_t *task);
+/* Al log, para un RSX colgado: los últimos destinos creados o reciclados,
+ * profundidades y cargas de la z (con su tarea), lo ligado y las tablas de
+ * destinos y profundidades. Solo lee. */
+void salsa64_rdp_diag_log(void (*log)(const char *fmt, ...));
 
 #endif

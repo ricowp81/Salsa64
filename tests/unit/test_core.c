@@ -133,7 +133,9 @@ static void pi_dma_raises_interrupt(void)
 static void si_dma_to_pif_ram(void)
 {
 	/* Un intercambio de estado del control, que el PIF prepara al terminar la
-	 * escritura y ejecuta al terminar la lectura siguiente. */
+	 * escritura y ejecuta al terminar la lectura siguiente. Con el ritmo fijo
+	 * de 2 ms (si-ritmo-viejo); el ritmo según la PIF, en si_dma_timing. */
+	salsa64_si_set_fixed(&t_n64.bus, true);
 	t_wr32(0x4000, 0x01040100);
 	t_wr32(0x4004, 0x000000FE);
 	t_wr32(0x403C, 0x00000001);
@@ -183,6 +185,70 @@ static void si_dma_to_pif_ram(void)
 	salsa64_n64_reset(&t_n64);
 	CHECK_EQ(salsa64_bus_read32(&t_n64.bus, 0x04800018), 0);
 	CHECK_EQ(t_n64.sched.when[SALSA64_EV_SI_DMA], SALSA64_SCHED_NEVER);
+	salsa64_si_set_fixed(&t_n64.bus, false);
+}
+
+/* Pide una operación del SI y devuelve cuántos ciclos tarda en completarse. */
+static uint64_t si_op_cycles(uint32_t reg, uint32_t dram)
+{
+	uint64_t start = CPU->cycles;
+	salsa64_bus_write32(&t_n64.bus, 0x04800000, dram, ~0u);
+	salsa64_bus_write32(&t_n64.bus, reg, 0x1FC007C0, ~0u);
+	CHECK(salsa64_bus_read32(&t_n64.bus, 0x04800018) & SALSA64_SI_STATUS_DMA_BUSY);
+	uint64_t when = t_n64.sched.when[SALSA64_EV_SI_DMA];
+	CHECK(when != SALSA64_SCHED_NEVER && when > start);
+	salsa64_sched_dispatch(&t_n64.sched, when - 1);
+	CHECK_EQ(t_n64.bus.mi.intr, 0);
+	CPU->cycles = when;
+	salsa64_sched_dispatch(&t_n64.sched, when);
+	CHECK_EQ(salsa64_bus_read32(&t_n64.bus, 0x04800018), SALSA64_SI_STATUS_INTR);
+	salsa64_bus_write32(&t_n64.bus, 0x04800018, 0, ~0u);
+	return when - start;
+}
+
+static void si_dma_timing(void)
+{
+	/* La escritura son 65 µs fijos; la lectura, lo que la PIF tarda en los
+	 * intercambios: la lectura de un control, 0,66 ms; de cuatro, 1,65 ms; un
+	 * bloque del Controller Pak, 0,66 ms (constantes medidas por ares). */
+	for (unsigned p = 0; p < 4; p++) {
+		struct salsa64_pad pad = { 0, 0, 0, p == 0 };
+		salsa64_pif_set_pad(&t_n64.bus, p, &pad);
+	}
+	for (uint32_t a = 0x7000; a < 0x7040; a += 4)
+		t_wr32(a, 0);
+	t_wr32(0x7000, 0x01040100);  /* control 1: estado, y fin */
+	t_wr32(0x7004, 0x000000FE);
+	t_wr32(0x703C, 0x00000001);
+	CHECK_EQ(si_op_cycles(0x04800010, 0x7000), SALSA64_SI_DMA_WRITE_CYCLES);
+	CHECK_EQ(si_op_cycles(0x04800004, 0x7100), (13600u + 22000u + 1420u) * 3 / 2);
+	CHECK_EQ(t_rd32(0x7100), 0x01040100);
+	/* Cuatro controles, tres sin conectar (no contestan, pero la PIF los intenta): bloques de 7 bytes. */
+	for (uint32_t a = 0x7000; a < 0x7040; a += 4)
+		t_wr32(a, 0);
+	t_wr32(0x7000, 0x01040100);
+	t_wr32(0x7004, 0x00000001);
+	t_wr32(0x7008, 0x04010000);
+	t_wr32(0x700C, 0x00000104);
+	t_wr32(0x7010, 0x01000000);
+	t_wr32(0x7014, 0x00010401);
+	t_wr32(0x701C, 0xFE000000);
+	t_wr32(0x703C, 0x00000001);
+	CHECK_EQ(si_op_cycles(0x04800010, 0x7000), SALSA64_SI_DMA_WRITE_CYCLES);
+	CHECK_EQ(si_op_cycles(0x04800004, 0x7100), (13600u + 22000u + 3u * 18000u + 1420u) * 3 / 2);
+	/* Un bloque del Controller Pak del control 1 y los otros canales saltados. */
+	for (uint32_t a = 0x7000; a < 0x7040; a += 4)
+		t_wr32(a, 0);
+	t_wr32(0x7000, 0x03210200);
+	t_wr32(0x7024, 0x0000FE00);
+	t_wr32(0x703C, 0x00000001);
+	CHECK_EQ(si_op_cycles(0x04800010, 0x7000), SALSA64_SI_DMA_WRITE_CYCLES);
+	CHECK_EQ(si_op_cycles(0x04800004, 0x7100), (13600u + 22000u + 1420u) * 3 / 2);
+	/* Con el ritmo fijo, las dos tardan 2 ms. */
+	salsa64_si_set_fixed(&t_n64.bus, true);
+	CHECK_EQ(si_op_cycles(0x04800010, 0x7000), SALSA64_SI_DMA_CYCLES);
+	CHECK_EQ(si_op_cycles(0x04800004, 0x7100), SALSA64_SI_DMA_CYCLES);
+	salsa64_si_set_fixed(&t_n64.bus, false);
 }
 
 static void si_dma_immediate_switch(void)
@@ -234,6 +300,7 @@ void t_suite_core(void)
 	RUN(mi_version_and_mask);
 	RUN(pi_dma_raises_interrupt);
 	RUN(si_dma_to_pif_ram);
+	RUN(si_dma_timing);
 	RUN(si_dma_immediate_switch);
 	RUN(sp_status_and_semaphore);
 }

@@ -19,8 +19,14 @@ static uint8_t scratch[SALSA64_STATE_SCRATCH] __attribute__((aligned(128)));
 static uint16_t thumb_px[SALSA64_STATE_THUMB_W * SALSA64_STATE_THUMB_H];
 static bool thumb_ok;
 static uint64_t thumb_us;
+static bool keep_snapshot;
 
-static inline void lwsync(void) { __asm__ volatile("lwsync" ::: "memory"); }
+void states_keep_snapshot(bool keep)
+{
+	keep_snapshot = keep;
+}
+
+static inline void lwsync(void) { __atomic_thread_fence(__ATOMIC_ACQ_REL); }
 
 static bool fs_read(void *ctx, void *data, uint32_t len)
 {
@@ -100,8 +106,11 @@ uint32_t states_reserved(void)
 
 bool states_init(uint32_t rdram_size)
 {
-	if (bg.ready)
+	if (bg.ready) {
+		if (!bgjob_ready())
+			bgjob_init();
 		return true;
+	}
 	bg.ram_cap = (rdram_size + 127u) & ~127u;
 	bg.small = memalign(128, SALSA64_STATE_SECTIONS);
 	bg.ram = memalign(128, bg.ram_cap);
@@ -126,21 +135,31 @@ bool states_init(uint32_t rdram_size)
 
 void states_shutdown(uint64_t wait_us)
 {
-	if (bg.pending && bg.finished) {
-		salsa64_log("estado: la escritura de la ranura %u terminó %s al cerrar%s%s", bg.slot,
-			    bg.res.ok ? "bien" : "con error", bg.res.ok ? "" : ": ", bg.res.ok ? "" : bg.res.err);
-		bg.pending = 0;
-		bg.finished = 0;
-	}
 	if (bgjob_ready()) {
 		if (!bgjob_wait(wait_us)) {
 			salsa64_log("estados: la escritura en segundo plano no terminó en %.1f s: se sigue sin esperarla",
 				    wait_us / 1e6);
-			return;
+			return;  /* el escritor todavía usa la foto */
 		}
 		bgjob_shutdown();
 	}
+	if (bg.pending && bg.finished)
+		salsa64_log("estado: la escritura de la ranura %u terminó %s al cerrar%s%s", bg.slot,
+			    bg.res.ok ? "bien" : "con error", bg.res.ok ? "" : ": ", bg.res.ok ? "" : bg.res.err);
 	bgio_shutdown();
+	bg.pending = bg.finished = 0;
+	if (keep_snapshot)
+		return;  /* comparación con la reserva permanente entre juegos */
+	/* El primer juego reservaba 8 MB de RDRAM y 1 MB de secciones que
+	 * permanecían vivos en el menú. La siguiente ROM de 64 MB ya no cabía. */
+	uint32_t released = states_reserved();
+	free(bg.small);
+	free(bg.ram);
+	memset(&bg, 0, sizeof bg);
+	states_thumb_clear();
+	thumb_us = 0;
+	if (released)
+		salsa64_log("estados: foto liberada al cerrar (%u KB)", released >> 10);
 }
 
 bool states_busy(void)
@@ -224,7 +243,7 @@ bool states_save(struct salsa64_n64 *n64, unsigned slot, struct states_timing *t
 
 	/* La escritura anterior tiene que haber terminado: la foto es una sola. */
 	if (!bg_idle(5000000)) {
-		snprintf(err, err_size, tr("el estado anterior sigue escribiéndose"));
+		snprintf(err, err_size, "%s", tr("el estado anterior sigue escribiéndose"));
 		return false;
 	}
 	if (bg.pending && bg.finished) {
@@ -275,7 +294,7 @@ bool states_load(struct salsa64_n64 *n64, unsigned slot, struct states_timing *t
 	*broken = false;
 	/* Cargar lo que se está escribiendo: esperar a que esté en el disco. */
 	if (!bg_idle(10000000)) {
-		snprintf(err, err_size, tr("el estado sigue escribiéndose"));
+		snprintf(err, err_size, "%s", tr("el estado sigue escribiéndose"));
 		return false;
 	}
 	uint64_t t0 = sysGetSystemTime();
@@ -284,7 +303,7 @@ bool states_load(struct salsa64_n64 *n64, unsigned slot, struct states_timing *t
 	memset(&io, 0, sizeof io);
 	s32 fd = -1;
 	if (sysLv2FsOpen(path, SYS_O_RDONLY, &fd, 0, NULL, 0) != 0) {
-		snprintf(err, err_size, tr("no hay estado"));
+		snprintf(err, err_size, "%s", tr("no hay estado"));
 		return false;
 	}
 	io.fd = fd;

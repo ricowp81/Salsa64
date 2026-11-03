@@ -9,8 +9,13 @@
  * vértice de la N64 con w ≈ 2000 deja el término casi en cero (RPCS3 lo
  * emula así: tcN * gl_FragCoord.w). Ver docs/rsx-notes.md.
  *
- * Como rsxkit siempre quiere interpolación con perspectiva, el bit se
- * limpia en cada instrucción al subir el programa.
+ * Como rsxkit quiere interpolación con perspectiva en las coordenadas de
+ * textura, el bit se limpia en cada instrucción al subir el programa. La
+ * excepción deliberada es el sombreado lineal en pantalla
+ * (rsxkit_affine_shade): con el vertex program multiplicando los términos
+ * X_j por w, el mismo bit en las instrucciones que leen TEXCOORD1..7 deja
+ * cada X_j interpolado lineal en pantalla, como el RDP de la N64
+ * (rsxkit_fp_upload_affine).
  */
 #include <string.h>
 
@@ -24,13 +29,19 @@
 #define FP_SRC_TYPE(w)  ((w) & 3u)
 #define FP_SRC_CONST    2u
 #define FP_DISABLE_PC   0x80000000u
+/* Palabra 0: registro de entrada que lee la instrucción (bits 13–16): COL0 = 1,
+ * TEXCOORDn = 4 + n. */
+#define FP_INPUT(w)     (((w) >> 13) & 0xFu)
+#define FP_IN_TC(n)     (4u + (n))
 
 static inline u32 halves(u32 w)
 {
 	return (w << 16) | (w >> 16);
 }
 
-static void fix_perspective(u32 *ucode, u32 size)
+/* affine: además, el bit puesto en las instrucciones que leen TEXCOORD1..7
+ * (los términos X_j). */
+static void fix_perspective_mode(u32 *ucode, u32 size, int affine)
 {
 	u32 n = size / 4;
 	for (u32 i = 0; i + 4 <= n;) {
@@ -40,11 +51,19 @@ static void fix_perspective(u32 *ucode, u32 size)
 		for (int s = 1; s < 4; s++)
 			if (FP_SRC_TYPE(halves(insn[s])) == FP_SRC_CONST)
 				has_const = 1;
-		insn[3] = halves(halves(insn[3]) & ~FP_DISABLE_PC);
+		u32 w3 = halves(insn[3]) & ~FP_DISABLE_PC;
+		if (affine && FP_INPUT(w0) >= FP_IN_TC(1) && FP_INPUT(w0) <= FP_IN_TC(7))
+			w3 |= FP_DISABLE_PC;
+		insn[3] = halves(w3);
 		i += has_const ? 8 : 4;
 		if (w0 & FP_END)
 			break;
 	}
+}
+
+static void fix_perspective(u32 *ucode, u32 size)
+{
+	fix_perspective_mode(ucode, size, 0);
 }
 
 /* Los programas subidos, con una suma de su copia en la memoria del RSX,
@@ -104,10 +123,10 @@ static void restore(unsigned i)
 {
 	memcpy(tracked[i].buf, tracked[i].src, tracked[i].size);
 	if (tracked[i].fix)
-		fix_perspective(tracked[i].buf, tracked[i].size);
+		fix_perspective_mode(tracked[i].buf, tracked[i].size, tracked[i].fix == 2);
 }
 
-void *rsxkit_fp_upload(rsxFragmentProgram *fp, u32 *offset)
+static void *upload(rsxFragmentProgram *fp, u32 *offset, int fix)
 {
 	void *ucode;
 	u32 size;
@@ -116,10 +135,20 @@ void *rsxkit_fp_upload(rsxFragmentProgram *fp, u32 *offset)
 	if (!buf)
 		return NULL;
 	memcpy(buf, ucode, size);
-	fix_perspective(buf, size);
+	fix_perspective_mode(buf, size, fix == 2);
 	rsxAddressToOffset(buf, offset);
-	rsxkit_fp_track(buf, ucode, size, 1);
+	rsxkit_fp_track(buf, ucode, size, fix);
 	return buf;
+}
+
+void *rsxkit_fp_upload(rsxFragmentProgram *fp, u32 *offset)
+{
+	return upload(fp, offset, 1);
+}
+
+void *rsxkit_fp_upload_affine(rsxFragmentProgram *fp, u32 *offset)
+{
+	return upload(fp, offset, 2);
 }
 
 int rsxkit_fp_verify(int repair)

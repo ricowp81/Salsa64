@@ -267,7 +267,7 @@ static void load_done(int result, const char *error, rc_client_t *client, void *
 		else
 			say(c, "%s", tr("RA: este juego no tiene logros"));
 		if (c->hardcore)
-			say(c, "%s", tr("RA Hardcore: sin estados ni trucos"));
+			say(c, "%s", tr("RA Hardcore: sin cargar estados ni trucos"));
 	} else if (result == RC_NO_GAME_LOADED) {
 		c->game = RA_GAME_UNKNOWN;
 		note(c, "RA: juego no reconocido");

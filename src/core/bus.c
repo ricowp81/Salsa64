@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "core/endian.h"
+#include "core/gamefix.h"
 #include "core/rompg.h"
 #include "core/save.h"
 #include "cpu/rec.h"
@@ -63,6 +64,8 @@ void salsa64_bus_set_rom(struct salsa64_bus *bus, const uint8_t *rom, uint32_t s
 	bus->rom_size = size > max ? max : size;
 	bus->rom_resident = bus->rom_size;
 	bus->rompg = NULL;
+	bus->gamefix_applied = 0;
+	salsa64_gamefix_select(bus);
 	if (bus->cpu && bus->cpu->rec)  /* puede haber código compilado desde la ROM anterior */
 		salsa64_rec_flush_why(bus->cpu->rec, SALSA64_REC_FLUSH_ROM);
 }

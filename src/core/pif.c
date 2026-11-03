@@ -137,6 +137,47 @@ static void parse(struct salsa64_pif *pif, const uint8_t *ram)
 	pif->parsed = 1;
 }
 
+/* Lo que tarda la lectura PIF RAM → RDRAM: la PIF ejecuta los intercambios
+ * joybus (unos 4 µs por bit en la línea, más su propio trabajo) antes de
+ * contestar. Constantes de ares (`ares/n64/pif/hle.cpp`, ISC), a 187,5 MHz:
+ * 13600 de base, 22000 por canal con control conectado, 18000 sin él, 20000
+ * el cartucho y 1420 por cada byte de control corto; aquí ×3 y a ciclos del
+ * VR4300 (÷2). Un control: 0,66 ms; cuatro: 1,65 ms; un bloque del
+ * Controller Pak: 0,66 ms. */
+uint32_t salsa64_pif_read_cycles(const struct salsa64_bus *bus)
+{
+	const uint8_t *ram = bus->pif_ram;
+	uint32_t units = 13600, shorts = 0;
+	unsigned i = 0, ch = 0;
+	while (i < SALSA64_PIF_RAM_SIZE && ch < SALSA64_PIF_CHANNELS) {
+		uint8_t b = ram[i++];
+		if (b == ESC_END) {
+			shorts++;
+			break;
+		}
+		if (b == ESC_SKIP || b == ESC_RESET) {
+			shorts++;
+			ch++;
+			continue;
+		}
+		if (b == ESC_NOP) {
+			shorts++;
+			continue;
+		}
+		if (i >= SALSA64_PIF_RAM_SIZE)
+			break;
+		uint8_t r = ram[i++];
+		i += (b & LEN_MASK) + (r & LEN_MASK);
+		if (ch < SALSA64_PIF_PORTS)
+			units += bus->pif.pads[ch].connected ? 22000 : 18000;
+		else
+			units += 20000;
+		ch++;
+	}
+	units += 1420 * shorts;
+	return units * 3 / 2;
+}
+
 void salsa64_pif_written(struct salsa64_bus *bus)
 {
 	uint8_t *ram = bus->pif_ram;

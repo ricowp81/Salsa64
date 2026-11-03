@@ -98,7 +98,11 @@ static int zip_open_entry(const char *path, FILE **file_out, struct ziprom_entry
 		goto done;
 	tail_len = (size_t)(file_len < (long)ZIP_EOCD_MAX ? file_len : (long)ZIP_EOCD_MAX);
 	tail = (uint8_t *)malloc(tail_len);
-	if (!tail || fseek(f, file_len - (long)tail_len, SEEK_SET) != 0 ||
+	if (!tail) {
+		result = SALSA64_ZIPROM_NOMEM;
+		goto done;
+	}
+	if (fseek(f, file_len - (long)tail_len, SEEK_SET) != 0 ||
 	    fread(tail, 1, tail_len, f) != tail_len)
 		goto done;
 
@@ -214,7 +218,7 @@ done:
 	free(tail);
 	if (f)
 		fclose(f);
-	return -1;
+	return result == SALSA64_ZIPROM_NOMEM ? SALSA64_ZIPROM_NOMEM : -1;
 }
 
 static void zip_copy_entry_name(const struct ziprom_entry *entry, char *dst, size_t size)
@@ -266,9 +270,10 @@ static int zip_read_data(FILE *f, const struct ziprom_entry *entry, uint8_t *dst
 	z_stream zs;
 	uint8_t overflow_byte;
 	memset(&zs, 0, sizeof zs);
-	if (inflateInit2(&zs, -MAX_WBITS) != Z_OK)
-		return -1;
-	int ret = Z_OK;
+	int ret = inflateInit2(&zs, -MAX_WBITS);
+	if (ret != Z_OK)
+		return ret == Z_MEM_ERROR ? SALSA64_ZIPROM_NOMEM : -1;
+	ret = Z_OK;
 	while (ret != Z_STREAM_END) {
 		if (!zs.avail_in) {
 			if (!remaining) {
@@ -331,7 +336,7 @@ static int zip_read_data(FILE *f, const struct ziprom_entry *entry, uint8_t *dst
 		     (ret == Z_OK || ret == Z_STREAM_END);
 	}
 	inflateEnd(&zs);
-	return ok ? 0 : -1;
+	return ret == Z_MEM_ERROR ? SALSA64_ZIPROM_NOMEM : ok ? 0 : -1;
 }
 
 int salsa64_ziprom_read_header(const char *path, uint8_t header[SALSA64_ROM_HEADER_SIZE],
@@ -340,12 +345,15 @@ int salsa64_ziprom_read_header(const char *path, uint8_t header[SALSA64_ROM_HEAD
 	FILE *f = NULL;
 	struct ziprom_entry entry;
 	int rc;
-	if (!header || !rom_size || zip_open_entry(path, &f, &entry) != 0)
+	if (!header || !rom_size)
 		return -1;
+	rc = zip_open_entry(path, &f, &entry);
+	if (rc != 0)
+		return rc;
 	rc = zip_read_data(f, &entry, header, SALSA64_ROM_HEADER_SIZE, false);
 	fclose(f);
 	if (rc != 0)
-		return -1;
+		return rc;
 	*rom_size = entry.uncompressed_size;
 	zip_copy_entry_name(&entry, entry_name, entry_name_size);
 	return 0;
@@ -357,8 +365,11 @@ int salsa64_ziprom_extract(const char *path, uint8_t *dst, uint32_t dst_cap,
 	FILE *f = NULL;
 	struct ziprom_entry entry;
 	int rc;
-	if (!dst || !rom_size || zip_open_entry(path, &f, &entry) != 0)
+	if (!dst || !rom_size)
 		return -1;
+	rc = zip_open_entry(path, &f, &entry);
+	if (rc != 0)
+		return rc;
 	if (entry.uncompressed_size > dst_cap) {
 		fclose(f);
 		return -1;
@@ -366,7 +377,7 @@ int salsa64_ziprom_extract(const char *path, uint8_t *dst, uint32_t dst_cap,
 	rc = zip_read_data(f, &entry, dst, dst_cap, true);
 	fclose(f);
 	if (rc != 0)
-		return -1;
+		return rc;
 	*rom_size = entry.uncompressed_size;
 	zip_copy_entry_name(&entry, entry_name, entry_name_size);
 	return 0;

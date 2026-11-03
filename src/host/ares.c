@@ -209,10 +209,19 @@ static bool ucode_nonear(const struct salsa64_task *t, char *text, size_t n)
 
 /* ---- HLE y rasterizador ----------------------------------------------------- */
 
+/* Detalle de la HLE de la última tarea (vértices de G_VTX, triángulos de
+ * entrada): para comparar el modelo del ritmo del RCP con lo que tarda la
+ * misma tarea en ares (docs/ritmo-rcp.md). */
+static struct gfx_detail detail __attribute__((aligned(128)));
+
 static void run_task(const struct salsa64_task *t, enum salsa64_gbi gbi, struct gfx_job *job,
 		     struct gfx_result *res)
 {
 	salsa64_gfx_job(job, &bus, t, gbi);
+	memset(&detail, 0, sizeof detail);
+	job->detail_ea = (uint64_t)(uintptr_t)&detail;
+	job->detail_cap = sizeof detail;
+	job->detail_version = GFX_DETAIL_VERSION;
 	job->vtx_ea = (uint64_t)(uintptr_t)out_vtx;
 	job->vtx_cap = sizeof out_vtx;
 	job->cmd_ea = (uint64_t)(uintptr_t)out_cmd;
@@ -223,6 +232,10 @@ static void run_task(const struct salsa64_task *t, enum salsa64_gbi gbi, struct 
 	job->done_task = 0;
 	if (raster_fbfx >= 1)
 		job->flags |= GFX_JOB_FBTEX;  /* como salsa64-run y la PS3 */
+	if (!raster_affine)
+		job->flags |= GFX_JOB_NO_RSP_CLIP;  /* SALSA64_SIN_SOMBRA_AFIN, como salsa64-run */
+	if (getenv("SALSA64_GFX_S2DEX_BG_OLD") && strcmp(getenv("SALSA64_GFX_S2DEX_BG_OLD"), "0"))
+		job->flags |= GFX_JOB_S2DEX_BG_OLD;
 	gfx_init(&st);
 	gfx_run(&st, job, res);
 }
@@ -409,6 +422,27 @@ static void compare(const char *prefix, uint32_t dl, const struct target *t, uns
 	if (bad)
 		printf("; caja %u..%u × %u..%u", bx0, bx1 + 1, by0, by1 + 1);
 	printf("\n");
+	/* El bit de alfa (la cobertura que deja el RDP), si la imagen lo lleva
+	 * en el rasterizador: las de 16 bits que no son del ancho del VI, o
+	 * todas con SALSA64_ALFA_EN_TODAS=1. Solo donde la HLE dibujó: lo que
+	 * la lista no cubre queda en negro (con alfa 0 en un destino con alfa)
+	 * y no se cuenta; tampoco lo negro que sí dibujó. */
+	if (raster_image_alpha(t->addr)) {
+		uint32_t a0 = 0, a1 = 0, same = 0;
+		for (uint32_t y = 0; y < h; y++)
+			for (uint32_t x = 0; x < w; x++) {
+				uint32_t o = hle[y * RASTER_W + x];
+				if (!(o & 0xFFFFFFu))
+					continue;
+				uint32_t hb = o >> 24 ? 0u : 1u;
+				uint32_t cb = salsa64_rd16(rdram_orig + t->addr + 2 * (y * width + x)) & 1u;
+				same += hb == cb;
+				a0 += hb < cb;
+				a1 += hb > cb;
+			}
+		printf("    bit de alfa: %u píxeles iguales a la consola, %u en 0 donde la consola tiene 1, %u en 1 donde "
+		       "tiene 0\n", same, a0, a1);
+	}
 	if (bad) {
 		printf("    mapa (décimas de cada celda que difieren, '.' ninguna):\n");
 		for (int r = 0; r < MAP_ROWS; r++) {
@@ -496,7 +530,8 @@ static void cmds_to_be(uint8_t *cmd, uint32_t bytes)
 		} else if (op == GFX_OP_DRAW && size >= sizeof(struct gfx_draw)) {
 			SW32(r, struct gfx_draw, zimg, 1);
 			SW16(r, struct gfx_draw, scissor, 4);
-			SW32(r, struct gfx_draw, fog_color, 3);  /* fog_color, prim_kind, prim_tile */
+			SW32(r, struct gfx_draw, fog_color, 2);  /* fog_color, prim_kind */
+			SW16(r, struct gfx_draw, prim_tile, 1);  /* detrás, cvg_bit y relleno: bytes */
 			for (int t = 0; t < 2; t++) {
 				uint8_t *x = r + offsetof(struct gfx_draw, tex) + t * sizeof(struct gfx_tex);
 				SW32(x, struct gfx_tex, offset, 1);
@@ -696,6 +731,10 @@ static int one_dump(const char *path, const struct opts *o)
 		if (res.dl_errors)
 			printf(", %u errores de la lista", res.dl_errors);
 		printf("\n");
+		printf("  ritmo: %u cargas a la TMEM, %u G_VTX con %u vértices (%u con luz; %u en el resultado), %u triángulos de entrada; "
+		       "modelo del RCP %u ciclos (%.2f ms)\n",
+		       res.loads, detail.vertex_calls, detail.vertices, detail.lit_vertices, res.vertices, detail.triangles_in,
+		       salsa64_gfx_model_cycles(&res, gbis[i]), salsa64_gfx_model_cycles(&res, gbis[i]) / 93750.0);
 		uint32_t behind = behind_camera(&res);
 		if (behind)
 			printf("  %u triángulos con algún vértice detrás de la cámara (w ≤ 0; se recortan)\n", behind);
@@ -778,8 +817,18 @@ static void usage(FILE *out)
 	      "                      rasterizador copió a la RDRAM, como en la PS3, no de la consola\n"
 	      "      --gfxdump       también la salida de la HLE de cada lista, como el gfxdump de\n"
 	      "                      la PS3 (big-endian): <volcado>-<lista>.gfxdump.bin, para\n"
-	      "                      tools/gfxdump.py, --raster-dump o \"dump:\" en el RSX\n",
+	      "                      tools/gfxdump.py, --raster-dump o \"dump:\" en el RSX\n"
+	      "  En las imágenes de 16 bits con alfa en el rasterizador compara también el bit\n"
+	      "  de alfa (la cobertura del RDP); SALSA64_ALFA_EN_TODAS=1 lo lleva en todas,\n"
+	      "  SALSA64_ALFA_FRAGMENTO=1 deja el alfa del fragmento (como la v0.2.15).\n",
 	      out);
+}
+
+/* Variable de entorno puesta y distinta de "" y de "0" (como salsa64_host_env_on). */
+static bool env_on(const char *name)
+{
+	const char *v = getenv(name);
+	return v && *v && *v != '0';
 }
 
 int ares_main(int argc, char **argv)
@@ -834,6 +883,16 @@ int ares_main(int argc, char **argv)
 		sscanf(getenv("SALSA64_AA_EDGE_OFFSET"), "%f,%f", &raster_edge_factor, &raster_edge_units);
 	if (getenv("SALSA64_AA_EDGE_WIDTH"))
 		raster_edge_width = (float)atof(getenv("SALSA64_AA_EDGE_WIDTH"));
+	/* El alfa de los destinos como al jugar (run.c), y en todas las imágenes
+	 * de 16 bits para comparar su bit con el de la consola. */
+	raster_target_alpha = !env_on("SALSA64_SIN_ALFA_DESTINOS");
+	raster_copy_alpha = !env_on("SALSA64_COPIA_SIN_ALFA");
+	raster_cvg_alpha = !env_on("SALSA64_ALFA_FRAGMENTO");
+	raster_alpha_all = env_on("SALSA64_ALFA_EN_TODAS");
+	{
+		const char *e = getenv("SALSA64_SIN_SOMBRA_AFIN");  /* como salsa64_host_env_on */
+		raster_affine = !(e && *e && strcmp(e, "0"));
+	}
 	raster_q5 = q5;
 	int total = 0;
 	for (int i = optind; i < argc; i++) {

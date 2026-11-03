@@ -17,10 +17,14 @@
  * (uno por componente: fogsel[0] = X0..X3, fogsel[1] = X4..X6). El color
  * del vértice sale tal cual en COLOR0 para los programas generados.
  * Coordenadas de textura: uv_i = st · xf[i].xy + xf[i].zw.
+ * Con affine.x = 1 cada X_j va multiplicado por w: los fragment programs
+ * los leen sin corrección de perspectiva (la entrada llega dividida entre
+ * w) y así el RSX interpola X_j lineal en pantalla, como el sombreado del
+ * RDP de la N64 (rsxkit_affine_shade).
  */
 void main(float4 position : POSITION, float2 st : TEXCOORD0, float4 color : COLOR0, float4 prev : TEXCOORD1,
 	uniform float4 space, uniform float4 xf[2], uniform float4 k[21], uniform float4 fog,
-	uniform float4 fogsel[2], uniform float4 lerp,
+	uniform float4 fogsel[2], uniform float4 lerp, uniform float4 affine,
 	out float4 oPosition : POSITION, out float4 oColor : COLOR0, out float4 oUV : TEXCOORD0,
 	out float4 oX0 : TEXCOORD1, out float4 oX1 : TEXCOORD2, out float4 oX2 : TEXCOORD3,
 	out float4 oX3 : TEXCOORD4, out float4 oX4 : TEXCOORD5, out float4 oX5 : TEXCOORD6,
@@ -34,11 +38,12 @@ void main(float4 position : POSITION, float2 st : TEXCOORD0, float4 color : COLO
 	float f = fog.a * color.a;
 	float4 keep = float4(1.0 - f, 1.0 - f, 1.0 - f, 1.0);
 	float4 fa = float4(fog.rgb * f, 0.0);
-	oX0 = (k[0] + k[1] * color + k[2] * ca) * keep + fa * fogsel[0].x;
-	oX1 = (k[3] + k[4] * color + k[5] * ca) * keep + fa * fogsel[0].y;
-	oX2 = (k[6] + k[7] * color + k[8] * ca) * keep + fa * fogsel[0].z;
-	oX3 = (k[9] + k[10] * color + k[11] * ca) * keep + fa * fogsel[0].w;
-	oX4 = (k[12] + k[13] * color + k[14] * ca) * keep + fa * fogsel[1].x;
-	oX5 = (k[15] + k[16] * color + k[17] * ca) * keep + fa * fogsel[1].y;
-	oX6 = (k[18] + k[19] * color + k[20] * ca) * keep + fa * fogsel[1].z;
+	float wm = 1.0 + affine.x * (p.w - 1.0);
+	oX0 = ((k[0] + k[1] * color + k[2] * ca) * keep + fa * fogsel[0].x) * wm;
+	oX1 = ((k[3] + k[4] * color + k[5] * ca) * keep + fa * fogsel[0].y) * wm;
+	oX2 = ((k[6] + k[7] * color + k[8] * ca) * keep + fa * fogsel[0].z) * wm;
+	oX3 = ((k[9] + k[10] * color + k[11] * ca) * keep + fa * fogsel[0].w) * wm;
+	oX4 = ((k[12] + k[13] * color + k[14] * ca) * keep + fa * fogsel[1].x) * wm;
+	oX5 = ((k[15] + k[16] * color + k[17] * ca) * keep + fa * fogsel[1].y) * wm;
+	oX6 = ((k[18] + k[19] * color + k[20] * ca) * keep + fa * fogsel[1].z) * wm;
 }

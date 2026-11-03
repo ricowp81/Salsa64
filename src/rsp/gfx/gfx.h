@@ -181,6 +181,32 @@ _Static_assert(sizeof(struct gfx_detail) % 16 == 0, "detalle apto para DMA");
  * cargados dentro de una tarea S2DEX. No escala G_MODIFYVTX. */
 #define GFX_JOB_AFFINE_CHAIN 0x1000u
 #define GFX_JOB_S2DEX_OLD_MODES 0x2000u
+/* Interruptor: no tomar como niebla la mezcla FOG·A_SHADE + IN·(1 − A) en
+ * un ciclo con FORCE_BL (la pista de F-Zero X; rdp.c blend_state). El PPE
+ * lo pone si existe sin-niebla-1ciclo en el directorio de datos. */
+#define GFX_JOB_NO_FOG_1CYCLE 0x4000u
+/* Interruptor: no recortar los triángulos contra la caja del clip ratio
+ * como el RSP (rdp.c gfx_triangle): queda solo el plano cercano, como
+ * antes. Va con la sombra afín del consumidor (sin-sombra-afin en el
+ * directorio de datos apaga las dos cosas; en el host,
+ * SALSA64_SIN_SOMBRA_AFIN=1). */
+#define GFX_JOB_NO_RSP_CLIP 0x8000u
+/* Diagnóstico: vuelve al negro opaco usado antes para las texturas YUV. */
+#define GFX_JOB_NO_YUV 0x10000u
+/* Diagnóstico: fondos escalados con el marco sin limitar a la imagen. */
+#define GFX_JOB_S2DEX_BG_OLD 0x20000u
+/* Diagnóstico: el blender solo con los cuatro modos de antes (todo lo demás
+ * como IN·α + MEM·(1 − α)); los productos nuevos de gfx_blend no salen. */
+#define GFX_JOB_BLEND_OLD 0x40000u
+/* Interruptor: el paso entre filas de los fondos de S2DEX (G_BG_COPY,
+ * G_BG_1CYC) vuelve a ser imageW texels en vez de imageW redondeado hacia
+ * abajo a palabras de 64 bits, como el microcódigo (s2dex.c bg_stride;
+ * Worms Armageddon). El PPE lo pone si existe s2dex-paso-viejo. */
+#define GFX_JOB_S2DEX_BG_ROW_OLD 0x80000u
+/* Interruptor: la lista secundaria de Factor 5 (Indiana Jones, f5indy.c)
+ * sigue hasta el B8 000000 FFFFFFFF aunque antes haya otro G_ENDDL, como
+ * antes del 2026-10-29. El PPE lo pone si existe f5-sublista-vieja. */
+#define GFX_JOB_F5_SUB_OLD 0x100000u
 /* Valor interno de chain_ex; no forma parte del descriptor ni del estado RDP. */
 #define GFX_CHAIN_AFFINE 2u
 
@@ -218,8 +244,9 @@ struct gfx_result {
 	uint32_t loads;          /* cargas a la TMEM (LOADBLOCK, LOADTILE, LOADTLUT) */
 	uint32_t load_reads;     /* lecturas de la RDRAM para esas cargas */
 	uint32_t tex_old;        /* de las reusadas, decodificadas en tareas anteriores */
-	uint32_t tex_arena;      /* decodificadas en el arena (sin lugar en la caché) */
-	uint32_t tex_evicted;    /* texturas sacadas de la caché */
+	uint16_t tex_arena;      /* decodificadas en el arena (sin lugar en la caché; da la vuelta en 65536) */
+	uint16_t tex_evicted;    /* texturas sacadas de la caché (ídem) */
+	uint32_t vertices;       /* vértices cargados (G_VTX y los de cada microcódigo): ritmo del RCP */
 	uint32_t t_hash;         /* ticks identificando texturas (hash y búsqueda) */
 	uint32_t skipped;        /* comandos saltados de otro microcódigo (G_LOAD_UCODE) */
 	uint32_t bg;             /* fondos de S2DEX dibujados (G_BG_COPY, G_BG_1CYC) */
@@ -234,6 +261,7 @@ struct gfx_result {
 #define GFX_RES_LOAD_UCODE   0x20u  /* G_LOAD_UCODE a otro microcódigo: se saltó su tramo */
 #define GFX_RES_FOREIGN_END  0x40u  /* la lista terminó dentro de ese tramo (sin volver) */
 #define GFX_RES_VGROUP_FULL  0x80u  /* GFX_JOB_INTERP: faltan registros GFX_OP_VGROUP (no se corta) */
+#define GFX_RES_F5_SUB_END   0x100u /* Factor 5: una lista secundaria acabó en un G_ENDDL que no es B8 … FFFFFFFF */
 /* La lista no llegó a su fin (o acabó donde no se sabe qué hizo): el juego
  * sigue esperando al RDP. */
 #define GFX_RES_CUT (GFX_RES_VTX_FULL | GFX_RES_CMD_FULL | GFX_RES_TEX_FULL | GFX_RES_LOOP | GFX_RES_FOREIGN_END)
@@ -354,10 +382,18 @@ enum { GFX_F_NONE = 0, GFX_F_T0, GFX_F_T0A, GFX_F_T1, GFX_F_T1A, GFX_F_C, GFX_F_
 
 /* Modo de mezcla con el framebuffer. */
 enum gfx_blend {
-	GFX_BLEND_OFF = 0,  /* opaco */
-	GFX_BLEND_ALPHA,    /* src * a + dst * (1 - a) */
-	GFX_BLEND_ADD,      /* src * a + dst */
-	GFX_BLEND_KEEP,     /* no escribe color (solo profundidad) */
+	GFX_BLEND_OFF = 0,   /* opaco */
+	GFX_BLEND_ALPHA,     /* src * a + dst * (1 - a) */
+	GFX_BLEND_ADD,       /* src * a + dst */
+	GFX_BLEND_KEEP,      /* no escribe color (solo profundidad) */
+	/* Los demás productos del blender del RDP que el RSX hace tal cual
+	 * (rdp.c, classify_blend): un juego oscurece lo dibujado con una
+	 * pasada MEM·A_IN y suma el color encima con otra IN + MEM (las
+	 * explosiones, el humo y el resplandor del sol de Vigilante 8). */
+	GFX_BLEND_MUL,       /* dst * a */
+	GFX_BLEND_ADD_MUL,   /* src + dst * a */
+	GFX_BLEND_ALPHA_INV, /* src * (1 - a) + dst * a */
+	GFX_BLEND_ADD_ONE,   /* src + dst */
 };
 
 #define GFX_DEPTH_TEST   0x01u
@@ -393,6 +429,20 @@ static inline float gfx_prim_z(const struct gfx_vertex *v, uint32_t n)
 enum { GFX_CULL_NONE = 0, GFX_CULL_FRONT = 1, GFX_CULL_BACK = 2 };
 enum { GFX_ATEST_NONE = 0, GFX_ATEST_GEQUAL = 1 };
 
+/* gfx_draw.cvg_bit: el bit de alfa que el RDP deja en una color image de 16
+ * bits (RGBA5551) en los píxeles que escribe. No es el alfa de la mezcla: en
+ * los ciclos 1 y 2 es la cobertura (rdp.c, cvg_bit); en FILL, el bit del
+ * color de relleno, y en COPY, el del texel. Con un píxel cubierto entero
+ * (el RSX no tiene cobertura parcial):
+ *  - GFX_CVG_ONE: queda en 1 (CVG_DST_CLAMP y ZAP, y WRAP y SAVE sin IM_RD);
+ *  - GFX_CVG_KEEP: el de la memoria no cambia (WRAP y SAVE con IM_RD);
+ *  - GFX_CVG_ALPHA: el alfa del fragmento decide (FILL, COPY, y CLAMP con
+ *    CVG_X_ALPHA, donde la cobertura es cvg·α);
+ *  - GFX_CVG_MAX: 1 si ya lo era o si el alfa del fragmento llega a la mitad
+ *    (CLAMP con CVG_X_ALPHA, FORCE_BL e IM_RD: cvg·α + la de la memoria).
+ * docs/framebuffer.md, «El bit de alfa es la cobertura». */
+enum { GFX_CVG_ONE = 0, GFX_CVG_KEEP = 1, GFX_CVG_ALPHA = 2, GFX_CVG_MAX = 3 };
+
 struct gfx_draw {
 	struct gfx_cmd h;        /* a = primer vértice, b = número de vértices */
 	uint32_t zimg;           /* z image en uso (dirección física) */
@@ -407,7 +457,9 @@ struct gfx_draw {
 	uint8_t ntex;            /* texturas usadas: 0, 1 o 2 */
 	uint32_t fog_color;      /* 0xRRGGBBAA */
 	uint32_t prim_kind;      /* informativo: 0 triángulos, 1 rectángulos, 2 relleno */
-	uint32_t prim_tile;      /* informativo: tile de los rectángulos */
+	uint16_t prim_tile;      /* informativo: tile de los rectángulos */
+	uint8_t cvg_bit;         /* GFX_CVG_*: el bit de alfa que deja en una imagen de 16 bits */
+	uint8_t pad_cvg;
 	uint8_t nterms;          /* 0: combinación lineal fija; si no, términos con `factors` */
 	uint8_t factors[GFX_K_TERMS][GFX_K_FACTORS];  /* GFX_F_*, 0 = fin de la lista */
 	/* G_RM_VISCVG: el RDP escribe la cobertura de cada píxel como color
@@ -437,7 +489,8 @@ struct gfx_draw {
  * cercano entre los lugares a y b de un mismo grupo (siempre en los juegos
  * medidos), GFX_VCLIP_ID(número, a, b): la fracción sale de las coordenadas
  * de recorte del grupo, t = (z + w)_a / ((z + w)_a − (z + w)_b). Los demás
- * (rectángulos, recortes entre grupos) llevan pad = 0. */
+ * (rectángulos, recortes entre grupos, los vértices del recorte contra la
+ * caja del clip ratio) llevan pad = 0. */
 struct gfx_vgroup {
 	struct gfx_cmd h;   /* a = dirección, b = n | v0 << 8 | paso << 16, c = hash del contenido (no 0) */
 	float vp[4];        /* vscale x, y y vtrans x, y */

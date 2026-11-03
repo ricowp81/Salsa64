@@ -1342,6 +1342,71 @@ static void abi1_envmixer_real_state(void)
 		CHECK_EQ(get16(DST + 2 * i), 1280);
 }
 
+/* POLEF de ABI1 con A_INIT: el microcódigo toma las dos muestras previas de
+ * su zona de estados de la DMEM (+4 y +6 de 0xF90), que es donde el último
+ * RESAMPLE dejó sus 4 muestras y el ENVMIXER sus carriles (alist_polef). Un
+ * RESAMPLE 1:1 deja ahí las últimas muestras de su entrada; el POLEF
+ * siguiente, con entrada cero y h1 = 0, h2[0] = 0,75, arranca con
+ * 0,75 · l2 y decae; con AUD_JOB_POLEF_INIT_ZERO (o sin RESAMPLE antes) sale
+ * cero, como en mupen64plus-rsp-hle. */
+static void abi1_polef_init_from_scratch(void)
+{
+	static const int16_t h2[8] = { 0x3000, 0x2400, 0x1B00, 0x1440, 0x0F30, 0x0B64, 0x088B, 0x0668 };
+	for (int pass = 0; pass < 3; pass++) {
+		fresh();
+		job_flags = pass == 1 ? AUD_JOB_POLEF_INIT_ZERO : 0;
+		/* Entrada del RESAMPLE: 16 muestras, las 4 últimas −100, 200, 18, −57. */
+		put_const(SRC, 16, 1000);
+		put16(SRC + 24, -100);
+		put16(SRC + 26, 200);
+		put16(SRC + 28, 18);
+		put16(SRC + 30, -57);
+		put_const(SRC2, 16, 0);                        /* la entrada del POLEF: silencio */
+		for (int i = 0; i < 8; i++) {
+			put16(BOOK + 2 * i, 0);                    /* h1 */
+			put16(BOOK + 16 + 2 * i, h2[i]);
+		}
+		if (pass != 2) {
+			cmd(0x08000000u | 0x000, 0x0100u << 16 | 32);   /* in 0x5C0, out 0x6C0, 32 bytes */
+			cmd(0x04000000u, SRC);
+			cmd(0x05000000u | 0x01u << 16 | 0x8000, STATE); /* RESAMPLE A_INIT, tono 1,0 */
+		}
+		cmd(0x08000000u | 0x200, 0x0300u << 16 | 32);   /* in 0x7C0, out 0x8C0 */
+		cmd(0x04000000u, SRC2);
+		cmd(0x0B000000u | 32, BOOK);                    /* LOADADPCM: h1, h2 */
+		cmd(0x0E000000u | 0x01u << 16 | 0x4000, STATE + 0x40);  /* POLEF A_INIT, ganancia 1,0 */
+		cmd(0x08000000u | 0x000, 0x0300u << 16 | 32);
+		cmd(0x06000000u, DST);                          /* SAVEBUFF 0x8C0 */
+		run_abi(SALSA64_ABI_AUDIO);
+		CHECK_EQ(res.errors, 0);
+		CHECK_EQ(res.unknown, 0);
+		if (pass != 0) {
+			for (int i = 0; i < 16; i++)
+				CHECK_EQ(get16(DST + 2 * i), 0);
+			continue;
+		}
+		/* El estado del RESAMPLE quedó en la DMEM 0xF90 y l1 = 18, l2 = −57: la salida
+		 * es la respuesta del filtro de dos polos a ese estado con entrada cero. */
+		CHECK_EQ(get16(STATE + 6), -57);
+		CHECK_EQ((int16_t)salsa64_rd16(st.dmem + 0xF94), 18);
+		CHECK_EQ((int16_t)salsa64_rd16(st.dmem + 0xF96), -57);
+		int16_t l2 = -57, want[16];
+		for (int b = 0; b < 2; b++) {
+			int16_t out[8];
+			for (int i = 0; i < 8; i++)
+				out[i] = (int16_t)((h2[i] * l2) >> 14);  /* h1 = 0 y la entrada es cero: solo pesa l2 */
+			memcpy(want + 8 * b, out, sizeof out);
+			l2 = out[7];
+		}
+		CHECK_EQ(want[0], -43);
+		for (int i = 0; i < 16; i++)
+			CHECK_EQ(get16(DST + 2 * i), want[i]);
+		/* POLEF deja a cero los 4 primeros bytes de la zona y guarda sus 4 últimas salidas. */
+		CHECK_EQ(salsa64_rd32(st.dmem + 0xF90), 0);
+		CHECK_EQ(get16(STATE + 0x40 + 6), want[15]);
+	}
+}
+
 /* ENVMIXER lineal (GoldenEye): carril j del bloque inicial = v + tasa·c_j; cada
  * bloque suma la tasa. La dirección sale de la tasa: una tasa ≥ 1,0 recorta
  * hacia arriba; una menor da el destino de inmediato. */
@@ -1713,6 +1778,7 @@ void t_suite_audio(void)
 	RUN(selftest_lists_are_clean);
 	RUN(abi1_envmixer_real_state);
 	RUN(abi1_envmixer_linear);
+	RUN(abi1_polef_init_from_scratch);
 	RUN(naudio_phase_flags);
 	RUN(naudio_mp3_buffers_base);
 	RUN(nead_filter_direct);

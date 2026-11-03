@@ -166,7 +166,7 @@ static void job_main(void *arg)
 	nlen = dl_index_names((const char *)index, ilen, ext, names, ilen + 1);
 	free(index);
 	index = NULL;
-	salsa64_log("descargas: el índice trae %zu bytes de nombres %s", nlen, ext);
+	salsa64_log("descargas: el índice trae %u bytes de nombres %s", (unsigned)nlen, ext);
 
 	for (unsigned i = 0; i < job.n && !job.cancel; i++) {
 		const struct dl_rom *r = &job.roms[i];
@@ -189,7 +189,7 @@ static void job_main(void *arg)
 			} else if (http_get(url, &file, &flen, cap, &code) == 0) {
 				if (write_file(path, file, flen)) {
 					job.got++;
-					salsa64_log("descargas: %s -> %s (%zu bytes)", r->name, path, flen);
+					salsa64_log("descargas: %s -> %s (%u bytes)", r->name, path, (unsigned)flen);
 				} else {
 					job.missing++;
 					salsa64_log("descargas: no se pudo escribir %s", path);

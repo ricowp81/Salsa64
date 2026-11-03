@@ -232,6 +232,11 @@ struct salsa64_cpu {
 	 * Cause, EPC y el vector ya escritos). */
 	void (*exc_hook)(struct salsa64_cpu *cpu);
 
+	/* Barrido de la caché de datos (salsa64_cpu_set_dcache_sweep): ciclos
+	 * que se cobran al empezar uno (0 = gratis, como antes) y cuántos van. */
+	uint32_t dcache_sweep_cycles;
+	uint32_t dcache_sweeps;
+
 	/* Bucles de espera (idle.c). Las tablas guardan pc ^ instrucción del
 	 * salto: descartados para siempre, con fallos seguidos (cuántos en
 	 * idle_fails) y que ya fueron de espera alguna vez. */
@@ -258,6 +263,24 @@ void salsa64_cpu_run(struct salsa64_cpu *cpu);
 /* Activa o apaga el salto de bucles de espera (activo por omisión). Apagarlo
  * da el mismo resultado, solo más lento: sirve para comparar y medir. */
 void salsa64_cpu_set_idle(struct salsa64_cpu *cpu, bool on);
+
+/*
+ * Costo de un barrido de la caché de datos (activo por omisión). Sin cachés
+ * emuladas, CACHE es gratis; en la consola, Index_Writeback_Invalidate (op
+ * 0x01) escribe de vuelta cada línea sucia de 16 bytes, unos 40 ciclos cada
+ * una (ares, `ares/n64/cpu/dcache.cpp`). libultra barre las 512 líneas
+ * desde la 0 en osWritebackDCacheAll y en osWritebackDCache/osInvalDCache
+ * de 8 KB o más: cada CACHE 0x01 sobre la línea 0 cobra
+ * SALSA64_DCACHE_SWEEP_CYCLES (la mitad de las líneas sucias). Medido con un
+ * modelo de la caché al estilo ares, un barrido encuentra en promedio 107
+ * (GoldenEye) a 293 (Zelda OoT) líneas sucias, hasta 512. Sin ese costo,
+ * Forsaken 64 manda un pedido a su hilo del SI 25 µs después de que este
+ * empieza a esperar la escritura de la PIF RAM (65 µs) y libultra lo toma
+ * por el aviso del SI (issue #55). Apagarlo vuelve a CACHE gratis. Va antes
+ * de correr: el recompilador decide al compilar si lo emite.
+ */
+#define SALSA64_DCACHE_SWEEP_CYCLES (256u * 40u)
+void salsa64_cpu_set_dcache_sweep(struct salsa64_cpu *cpu, bool on);
 
 /* Línea de interrupción externa: 2 = RCP (MI), 7 = Count/Compare. */
 void salsa64_cpu_set_ip(struct salsa64_cpu *cpu, unsigned line, bool level);

@@ -391,3 +391,200 @@ registro de `rsxkit_init` («video: antes de configurar…»):
   (`rsxkit_back_buffer`, `rsxkit_screen_texture`, `rsxkit_bind_frame`).
 - Regiones de mosaico (tiles) del sistema: el registro las lista; no se
   quitan.
+
+## Copias a 1:1 con filtro lineal: puntos en las capas de 8 bits (2026-10-28)
+
+`rsxkit_target_read` copiaba siempre con filtro lineal (reduce 3× → 1×). Con
+una superficie a 1× (las capas de fondo de 8 bits de Yoshi's Story, 336 × 256)
+la copia es 1:1 y el lineal no es exacto en el RSX: el vértice se ajusta a su
+subpíxel y la muestra cae a una fracción de texel del centro, así que el rojo
+sale mezclado con el vecino. En RGB es invisible; en una capa cuyo rojo es un
+índice de paleta, un índice ± 1 es otro color: puntos sueltos en cada borde de
+la capa (y una cuadrícula en las zonas planas, en las esquinas de los tiles).
+Reproducido con las cajas negras de la consola: las tiras de 336 × 6 que la
+HLE decodificó de la RDRAM ya traen los puntos (`build/yoshi-rdp/ps3/`).
+Arreglo: a 1:1 el más cercano (`rsxkit_read_filter_nearest`); la bandera
+`gfx-copia-lineal` vuelve al lineal. El mismo fenómeno obligó antes a dibujar
+sin filtro dentro de esas capas (rdp.c, «puntos naranjas y azules»).
+
+## Sombreado lineal en pantalla con el bit 31 de SRC2 (2026-10-29)
+
+El RDP de la N64 interpola el sombreado (color, alfa y con él el factor de
+niebla) lineal en pantalla; el RSX, con corrección de perspectiva. En los
+triángulos largos (la pista de F-Zero X, w de 500 a 6000; el fondo de sus
+pistas, con dos vértices cerca de la cámara muy fuera de la pantalla) la
+diferencia es grande: la bruma llegaba tarde y el fondo salía con la textura
+en vez de la sombra. El mismo bit que cgcomp pone por error (arriba:
+«quita la corrección de perspectiva en MUL, DP…») sirve a propósito: la
+entrada llega **dividida entre la w del vértice e interpolada lineal en
+pantalla** (lo que RPCS3 emula como `tcN * gl_FragCoord.w`). Si el vertex
+program multiplica cada término X_j por w (`rsxkit_lincomb*.vcg`, constante
+`affine`), el fragment program que lee TEXCOORD1..7 con el bit recibe
+X_j·w/w = X_j lineal en pantalla: la sombra del RDP, sin instrucciones de
+más por píxel. Las coordenadas de textura (TEXCOORD0) y el color del
+vértice (COL0, factores C y Ca de los programas generados) siguen con
+perspectiva.
+
+- `rsxkit_affine_shade(1)` (lib/rsxkit/src/draw3d.c): la constante `affine`
+  del vertex program, una copia de cada programa precompilado con el bit en
+  las lecturas de TEXCOORD1..7 (`rsxkit_fp_upload_affine`, fprog.c) y
+  `rsxkit_fp_desc.affine` en los generados (fpgen.c: otro programa en la
+  caché). El emulador lo enciende por omisión (`salsa64_rdp_affine_shade`);
+  `sin-sombra-afin` en el directorio de datos lo apaga junto con el recorte
+  del RSP de la HLE (abajo); en el host, `SALSA64_SIN_SOMBRA_AFIN=1`.
+- Solo tiene sentido con el recorte de la HLE contra la caja del clip ratio
+  (`src/rsp/gfx/rdp.c`, `gfx_triangle`): el RDP interpola lineal **dentro
+  del polígono que el RSP le manda**, no dentro del triángulo del juego. Sin
+  recortar, la sombra afín de un triángulo con vértices a miles de píxeles
+  queda peor que la de perspectiva. Medido contra el microcódigo real
+  (F3DEX2 fifo 2.03 en la LLE del host): Sutherland–Hodgman recorriendo el
+  polígono desde su primer vértice con el anterior, el plano izquierdo al
+  final, abanico desde el primer vértice de la lista final y rechazo trivial
+  de cada triángulo del abanico por los planos de la pantalla (114 de 115
+  abanicos iguales; el que falta es un vértice de esquina a 0,9 px).
+- Precisión: el RSX hace X_j·w/w en el interpolador en fp32; los X_j llegan
+  a las instrucciones en fp16 como antes. En RPCS3 (`gl_FragCoord.w`), lo
+  mismo. Pendiente de confirmar en la PS3 real con el paquete «Salsa64
+  F-Zero afin»: si el bit no hiciera lo que el apunte de arriba midió, toda
+  la imagen saldría escalada por w; el interruptor lo deshace.
+
+## Indiana Jones: el RSX deja de avanzar tras una color image fuera de la RDRAM (2026-10-29)
+
+Lo que dejó el log de la PS3 real (escala-objetivo 4×, 1080p, la HLE de
+Factor 5 Indy en el SPE 0) tras once minutos de juego normales:
+
+- A los 736,65 s, al salir por segunda vez de una cascada de la primera
+  misión: `gfx: destino 900000/455: 455 × 341 a 2× (nueva, recicla
+  684000/448; alto pedido 44)`. Es el único destino de ancho raro de la
+  sesión (los demás, 400, 448, 512 y 640, creados entre los 86 y los 116 s);
+  la primera salida de la cascada no lo pidió. Justo antes los dibujos por
+  tarea suben de 127 a 280.
+- Dos segundos después, el PPE espera la barrera 267875 (la etiqueta va en
+  267874) en la etapa «profundidad» de la tarea 19625, con GET en 0 y PUT
+  en 0x3dde4, y GET no se movió en toda la espera. A los 12 s, cierre
+  forzado: se paran los SPE, se sale… y la consola entera quedó congelada.
+  La caja negra no se escribió (solo se escribía con SELECT + L2).
+
+**De dónde sale el destino.** 341 es el alto por omisión de
+`rdp_targets_get` (3/4 del ancho), 44 el fondo de las tijeras que siguen y
+2× la escala de un destino de 341 líneas con la escala-objetivo 4×. La
+dirección 0x900000 está fuera de los 8 MB de la RDRAM: el RDP de la consola
+no tiene dónde escribir ahí, así que no es una imagen que el juego vaya a
+ver (un efecto de la cascada o una copia a textura vivirían en la RDRAM).
+Es un G_SETCIMG que la HLE leyó de algo que no es una lista válida (la de
+Indiana Jones corre listas secundarias de la DMEM, `do_sub_dlist`, y pasa
+al RDP cualquier palabra desde 0xC0) o uno que el juego manda sin efecto en
+la N64; sin el volcado de esa tarea no se puede decir cuál. En el host,
+con las entradas del log como `--pad` y sin la partida del autor, el juego
+se queda en el menú «SELECT GAME» (las pulsaciones no llevan al mismo
+lugar) y en 39 500 campos no pide ninguna color image fuera de la RDRAM; y
+no sale siempre (una de dos salidas de la cascada): hace falta el volcado
+de la consola.
+
+**Por qué el RSX se queda (lo que lo sostiene).**
+- La espera es la de `zfeed` (la única espera de barrera en la etapa
+  «profundidad»): antes de una carga de la z desde la RDRAM espera la
+  barrera de la carga anterior, y esa barrera (267875) es la que `zfeed`
+  pone justo después de cargar. La barrera anterior (267874) sí se
+  escribió, y el reciclado del destino 684000/448, que pasa por
+  `rsxkit_finish`, terminó (la etapa «destinos» no aparece): el RSX estaba
+  al día al crear el destino de 455 y se paró antes de terminar esa carga
+  de la z. Entre una cosa y la otra solo se le mandaron, a lo sumo, los
+  dibujos sin z del destino nuevo y la carga.
+- En Indiana Jones la z se carga desde la RDRAM al cambiar de destino (su
+  z image es la dirección de uno de sus framebuffers, que `zfeed` ve
+  dibujado como color, o cambia lo que la suma de muestras mira). En la
+  misma sesión hubo 120 cargas de 400 × 447 y una de 448 × 415 sin
+  problema: alto de entrada impar, ancho siempre par. La del destino de 455
+  es de 455 × 341 a 2×: **ancho de entrada impar**, la primera de la sesión,
+  con el motor de imagen escalada (NV3089, `rsxkit_depth_load`).
+- nouveau (Mesa, `nv30_transfer.c`, la familia NV40 del RSX) redondea a 2
+  el ancho y el alto de entrada de cada copia con ese motor.
+- GET en 0 y quieto: 0 es el principio de la memoria del búfer (el bloque
+  de arranque de libgcm, que el RSX ejecuta una vez). Un RSX atascado en
+  una orden deja GET en ella; GET de vuelta en 0 sin avanzar se parece más
+  a un canal que el sistema reinició o detuvo tras una excepción.
+
+**Hipótesis (sin confirmar en la consola):** que lo que el RSX no tolera
+sea el ancho de entrada impar del motor de imagen escalada. Alternativas
+que el log no descarta: la superficie de 910 de ancho (la primera que no
+es múltiplo de 16) con los dibujos que fueran antes de la carga, o algo de
+la tarea que no se ve sin su volcado.
+
+**Blindaje** (encendido; `rsx-sin-blindaje` en `dev_hdd0/salsa64` lo apaga,
+`SALSA64_RSX_SIN_BLINDAJE=1` en el host):
+- Una color image que empieza fuera de la RDRAM no tiene destino
+  (`rdp_cimg_impossible`, `src/rdp/targets.c`; igual en `raster.c`): ni
+  superficie, ni reparto de rellenos, ni copias del PPE, ni recicla una
+  ranura. El caso de la cascada no llega al RSX.
+- `rsxkit_depth_load` reparte la copia en tramos de ancho de entrada par
+  (`lib/rsxkit/src/sifm.c`): el tramo impar lee un texel más de su fila
+  (dentro del pitch) con la misma razón y el mismo recorte, así que la
+  salida no cambia. Con anchos pares los tramos son los de siempre.
+- En el host, SM64, Zelda OoT, Indiana Jones, F-Zero X y Rogue Squadron
+  dan las mismas tareas e imágenes en sus primeros 1500 campos.
+
+**Cuando el RSX se queda igual** (`src/frontend/main.c`, `rsx_diag_full` y
+`rsx_stuck_files`):
+- rsxkit registra el aviso de excepciones del sistema
+  (`gcmSetGraphicsHandler`): el latido lo deja en el log en cuanto llega,
+  y el diagnóstico lo repite.
+- A los 2 s: registros (GET, PUT, REF, la última barrera y el último
+  `rsxkit_finish` mandados y escritos), el búfer de comandos alrededor de
+  GET y de los 672 bytes antes de PUT (con GET en 0 solo esto dice qué se
+  mandó al final), el rastro de las últimas 64 operaciones de rsxkit con su
+  offset en el búfer (`rsxkit_trace_get`: ligar, borrar, dibujos juntos,
+  cargas de la z, barreras…) y lo último de los destinos, profundidades y
+  cargas de la z (`salsa64_rdp_diag_log`).
+- A los 12 s, antes de salir, en `rsx-colgado-<campo>/`: el búfer de
+  comandos (`fifo.bin`), el volcado de la tarea que se traducía
+  (`gfxdump.bin`, para `salsa64-run --raster-dump`) y el anillo de la caja
+  negra si está encendida (`caja.s4bb`, sin comprimir), todo con
+  `sysLv2FsFsync`.
+- Salida: rsxkit abandona el RSX (`rsxkit_abandon`: no lo vuelve a esperar
+  ni a vaciar el búfer, ni flips) y pone PUT = GET para que no le quede
+  nada pendiente; no se suelta su memoria ni se esperan flips. Por qué se
+  congeló la consola: no se puede ver desde el PPE. Los grupos de SPU (lo
+  que la colgó el 2026-10-13) estaban parados («SPE detenidos» llegó al
+  log), así que lo que queda es lo que el proceso le deja al sistema: un
+  contexto del RSX parado con trabajo pendiente; si el sistema espera a que
+  el RSX lo termine (al liberar el contexto o al volver a dibujar el XMB),
+  no termina nunca. PUT = GET cubre el primer caso; si el RSX quedó en
+  un estado que solo un reinicio arregla, ninguna salida al XMB sirve. Para
+  probarlo, `rsx-colgado` con `reinicio` (reinicio por el sistema,
+  `sys_sm_shutdown` 0x200) o `reinicio-directo` (0x1200) hace que el
+  cierre forzado reinicie la consola en vez de volver al XMB, después de
+  escribir todo lo anterior.
+
+### Segunda ronda: de dónde salían 900000/455 y 880000/18 (2026-10-29)
+
+Con el blindaje, Indiana Jones ya no colgó la PS3, pero al salir de la
+cascada pidió 880000/18 (y una z image en 0x820000) en cada tarea: Indy
+invisible y la mitad derecha de la pantalla negra. Las cajas negras de esas
+tareas lo muestran en la salida de la HLE: los dibujos de Indy (tijeras en
+su recuadro) van a 880000/18, y un rectángulo de (240, 0) a (670, 430) con
+s = t = 0 pinta de negro la derecha.
+
+**Origen: la HLE ejecutaba vértices como comandos.** El G_SETCIMG
+`FFB00011 00880000` tiene formato 5, que no existe: son los 8 bytes de un
+vértice de Factor 5 (x −80, y 17, z 136, bandera 0); 900000/455 es otro
+(y 454, z 144), y el rectángulo, un G_FILLRECT de otro vértice. La lista
+secundaria (la dirección de DMEM 0x58C que el microcódigo corre antes de
+dibujar) se seguía hasta un B8 000000 FFFFFFFF; Indiana Jones deja ahí
+también listas que acaban en un B8 000000 00000000 (en la RDRAM de una
+partida en el host, 58 de los punteros a 0x58C), y la HLE seguía de largo
+por los vértices de detrás y ejecutaba como comandos del RDP las palabras
+desde 0xC0. El estado que dejan (color image, z image, rectángulos, modos)
+persiste: por eso pasa en cada tarea de la escena.
+
+**Comprobado contra el microcódigo real** (`salsa64-run --lle=all`, desde
+un estado de una partida en el mismo nivel): con la lista de un material
+cambiada para acabar en `B8000000 00000000` y un G_SETCIMG a 0x900000
+detrás, la HLE vieja lo ejecuta (aviso «fuera de la RDRAM») y el microcódigo
+real no; con el G_SETCIMG dentro de la lista (antes del B8 … FFFFFFFF), lo
+ejecutan los dos. El microcódigo termina la lista en cualquier G_ENDDL.
+
+**Arreglo:** `do_sub_dlist` (`src/rsp/gfx/f5indy.c`) termina en cualquier
+G_ENDDL (`GFX_RES_F5_SUB_END` en el resultado; la PS3 lo anota en el log);
+`f5-sublista-vieja` en `dev_hdd0/salsa64` (`SALSA64_F5_SUBLISTA_VIEJA=1` en
+el host) vuelve a lo de antes. El blindaje del RSX se queda como red.

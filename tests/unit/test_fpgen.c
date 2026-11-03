@@ -19,6 +19,7 @@
 
 #include "fpgen_ref.h"
 #include "rsxkit/fpgen.h"
+#include "rsxkit/rsxkit.h"
 
 /* ---- Intérprete ---- */
 
@@ -211,14 +212,14 @@ static void load_ref(const uint8_t *fpo, size_t size, struct ref *r)
 
 /* Descripciones equivalentes a los shaders de referencia. */
 static const rsxkit_fp_desc desc_lincomb2 = {
-	2, 5, { 0, 0 },
+	2, 5, 0, 0,
 	{ { RSXKIT_FP_T0 }, { RSXKIT_FP_T0A }, { RSXKIT_FP_T1 }, { RSXKIT_FP_T1A }, { 0 } }
 };
-static const rsxkit_fp_desc desc_t0t1 = { 2, 2, { 0, 0 }, { { RSXKIT_FP_T0, RSXKIT_FP_T1 }, { 0 } } };
+static const rsxkit_fp_desc desc_t0t1 = { 2, 2, 0, 0, { { RSXKIT_FP_T0, RSXKIT_FP_T1 }, { 0 } } };
 static const rsxkit_fp_desc desc_shade = {
-	1, 3, { 0, 0 }, { { RSXKIT_FP_T0, RSXKIT_FP_C, RSXKIT_FP_CA }, { RSXKIT_FP_C }, { 0 } }
+	1, 3, 0, 0, { { RSXKIT_FP_T0, RSXKIT_FP_C, RSXKIT_FP_CA }, { RSXKIT_FP_C }, { 0 } }
 };
-static const rsxkit_fp_desc desc_t0a = { 1, 2, { 0, 0 }, { { RSXKIT_FP_T0, RSXKIT_FP_T0A }, { RSXKIT_FP_CA } } };
+static const rsxkit_fp_desc desc_t0a = { 1, 2, 0, 0, { { RSXKIT_FP_T0, RSXKIT_FP_T0A }, { RSXKIT_FP_CA } } };
 
 /* Los X_j del shader de referencia de la combinación lineal están en
  * TEXCOORD1, 2, 3, 4 y 5 como en la descripción: misma fórmula. */
@@ -240,7 +241,7 @@ static void fpgen_refs_lincomb(void)
 
 		/* lincomb1: T0·X0 + T0a·X1 + X4 (sin los términos de T1). */
 		LOAD_REF(rsxkit_lincomb1, &r);
-		rsxkit_fp_desc d1 = { 1, 5, { 0, 0 }, { { RSXKIT_FP_T0 }, { RSXKIT_FP_T0A }, { 0 }, { 0 }, { 0 } } };
+		rsxkit_fp_desc d1 = { 1, 5, 0, 0, { { RSXKIT_FP_T0 }, { RSXKIT_FP_T0A }, { 0 }, { 0 }, { 0 } } };
 		fill_inputs(&s, seed);
 		s.in[IN_TC(3)][0] = s.in[IN_TC(3)][1] = s.in[IN_TC(3)][2] = s.in[IN_TC(3)][3] = 0.0f;
 		s.in[IN_TC(4)][0] = s.in[IN_TC(4)][1] = s.in[IN_TC(4)][2] = s.in[IN_TC(4)][3] = 0.0f;
@@ -308,7 +309,6 @@ static void check_shape(const uint32_t *w, int n, const rsxkit_fp_desc *d, const
 	for (int i = 0; i < n; i += 4) {
 		int last = i + 4 == n;
 		CHECK_EQ(w[i] & 1, (uint32_t)last);                   /* fin solo en la última */
-		CHECK_EQ(w[i + 3] >> 31, 0);                           /* con corrección de perspectiva */
 		CHECK_EQ((w[i + 1] >> 18) & 7, 7);                     /* condición: siempre */
 		CHECK_EQ((w[i] >> 9) & 0xF, 0xF);                      /* escribe xyzw */
 		unsigned input = (w[i] >> 13) & 0xF;
@@ -318,6 +318,8 @@ static void check_shape(const uint32_t *w, int n, const rsxkit_fp_desc *d, const
 			if ((w[i + k] & 3) == 1)
 				inputs = 1;
 		}
+		/* Con corrección de perspectiva, salvo los X_j de un programa afín. */
+		CHECK_EQ(w[i + 3] >> 31, (uint32_t)(d->affine && inputs && input >= IN_TC(1)));
 		if (inputs)
 			CHECK(input == IN_COL0 || input >= IN_TC(0));
 		if (inputs && input >= IN_TC(0)) {
@@ -365,31 +367,38 @@ static void fpgen_emit_forms(void)
 {
 	/* Un término de cada clase, al principio, en medio y al final. */
 	static const rsxkit_fp_desc descs[] = {
-		{ 0, 1, { 0, 0 }, { { 0 } } },                                    /* X0 */
-		{ 1, 1, { 0, 0 }, { { RSXKIT_FP_T0 } } },                         /* T0·X0 */
-		{ 0, 1, { 0, 0 }, { { RSXKIT_FP_C } } },                          /* C·X0: MOV + MUL */
-		{ 0, 1, { 0, 0 }, { { RSXKIT_FP_C, RSXKIT_FP_CA } } },            /* C·Ca·X0 */
-		{ 0, 2, { 0, 0 }, { { 0 }, { RSXKIT_FP_CA } } },
-		{ 2, 3, { 0, 0 }, { { RSXKIT_FP_T1A }, { 0 }, { RSXKIT_FP_T0A, RSXKIT_FP_T1 } } },
-		{ 2, 4, { 0, 0 },
+		{ 0, 1, 0, 0, { { 0 } } },                                    /* X0 */
+		{ 1, 1, 0, 0, { { RSXKIT_FP_T0 } } },                         /* T0·X0 */
+		{ 0, 1, 0, 0, { { RSXKIT_FP_C } } },                          /* C·X0: MOV + MUL */
+		{ 0, 1, 0, 0, { { RSXKIT_FP_C, RSXKIT_FP_CA } } },            /* C·Ca·X0 */
+		{ 0, 2, 0, 0, { { 0 }, { RSXKIT_FP_CA } } },
+		{ 2, 3, 0, 0, { { RSXKIT_FP_T1A }, { 0 }, { RSXKIT_FP_T0A, RSXKIT_FP_T1 } } },
+		{ 2, 4, 0, 0,
 		  { { RSXKIT_FP_T0, RSXKIT_FP_T1, RSXKIT_FP_C, RSXKIT_FP_CA }, { RSXKIT_FP_T0A, RSXKIT_FP_T1A, RSXKIT_FP_C },
 		    { RSXKIT_FP_CA, RSXKIT_FP_CA }, { RSXKIT_FP_T0, RSXKIT_FP_T0 } } },
 		/* Siete términos (todos los varyings). */
-		{ 2, 7, { 0, 0 },
+		{ 2, 7, 0, 0,
 		  { { RSXKIT_FP_T0 }, { RSXKIT_FP_T0A }, { RSXKIT_FP_T1 }, { RSXKIT_FP_T1A }, { 0 },
 		    { RSXKIT_FP_T0, RSXKIT_FP_T1 }, { RSXKIT_FP_C, RSXKIT_FP_CA } } },
 		/* GoldenEye: (T0 − E)·Sa·S + E·S → T0·C·Ca·X0 + C·X1 (Ca en X1.k2). */
-		{ 1, 2, { 0, 0 }, { { RSXKIT_FP_T0, RSXKIT_FP_C, RSXKIT_FP_CA }, { RSXKIT_FP_C } } },
+		{ 1, 2, 0, 0, { { RSXKIT_FP_T0, RSXKIT_FP_C, RSXKIT_FP_CA }, { RSXKIT_FP_C } } },
 	};
 	for (unsigned i = 0; i < sizeof descs / sizeof descs[0]; i++)
 		check_desc(&descs[i]);
+	/* Los mismos, afines: el bit 31 en las lecturas de X_j y nada más (la
+	 * cuenta del intérprete es la misma: el bit es cosa del interpolador). */
+	for (unsigned i = 0; i < sizeof descs / sizeof descs[0]; i++) {
+		rsxkit_fp_desc a = descs[i];
+		a.affine = 1;
+		check_desc(&a);
+	}
 	check_desc(&desc_lincomb2);
 	check_desc(&desc_t0t1);
 	check_desc(&desc_shade);
 	check_desc(&desc_t0a);
 
 	/* El programa más largo cabe en RSXKIT_FP_MAX_WORDS. */
-	rsxkit_fp_desc big = { 2, 7, { 0, 0 }, { { 0 } } };
+	rsxkit_fp_desc big = { 2, 7, 0, 0, { { 0 } } };
 	for (unsigned j = 0; j < 7; j++)
 		for (int k = 0; k < 4; k++)
 			big.factors[j][k] = (uint8_t)(RSXKIT_FP_T0 + (j + (unsigned)k) % 6);
@@ -400,41 +409,163 @@ static void fpgen_emit_forms(void)
 
 static void fpgen_desc_rules(void)
 {
-	rsxkit_fp_desc d = { 1, 2, { 0, 0 }, { { RSXKIT_FP_C, RSXKIT_FP_T0A, RSXKIT_FP_T0 }, { RSXKIT_FP_CA } } };
+	rsxkit_fp_desc d = { 1, 2, 0, 0, { { RSXKIT_FP_C, RSXKIT_FP_T0A, RSXKIT_FP_T0 }, { RSXKIT_FP_CA } } };
 	CHECK_EQ(rsxkit_fp_desc_canon(&d), 0);
 	CHECK_EQ(d.factors[0][0], RSXKIT_FP_T0);
 	CHECK_EQ(d.factors[0][1], RSXKIT_FP_T0A);
 	CHECK_EQ(d.factors[0][2], RSXKIT_FP_C);
 	CHECK_EQ(d.factors[0][3], 0);
 	uint32_t h = rsxkit_fp_desc_hash(&d);
-	rsxkit_fp_desc d2 = { 1, 2, { 0, 0 }, { { RSXKIT_FP_T0A, RSXKIT_FP_C, RSXKIT_FP_T0 }, { RSXKIT_FP_CA } } };
+	rsxkit_fp_desc d2 = { 1, 2, 0, 0, { { RSXKIT_FP_T0A, RSXKIT_FP_C, RSXKIT_FP_T0 }, { RSXKIT_FP_CA } } };
 	CHECK_EQ(rsxkit_fp_desc_canon(&d2), 0);
 	CHECK(!memcmp(&d, &d2, sizeof d));
 	CHECK_EQ(rsxkit_fp_desc_hash(&d2), h);
 	d2.factors[1][0] = RSXKIT_FP_C;
 	CHECK(rsxkit_fp_desc_hash(&d2) != h);
+	/* La afín es otro programa: otro hash; affine > 1 o el relleno no valen. */
+	rsxkit_fp_desc da = d;
+	da.affine = 1;
+	CHECK_EQ(rsxkit_fp_desc_canon(&da), 0);
+	CHECK(rsxkit_fp_desc_hash(&da) != h);
+	da.affine = 2;
+	CHECK_EQ(rsxkit_fp_desc_canon(&da), (uint64_t)RSXKIT_FP_EDESC);
+	da.affine = 0;
+	da.pad = 1;
+	CHECK_EQ(rsxkit_fp_desc_canon(&da), (uint64_t)RSXKIT_FP_EDESC);
 
 	uint32_t words[RSXKIT_FP_MAX_WORDS];
 	/* Sin términos. */
-	rsxkit_fp_desc bad = { 1, 0, { 0, 0 }, { { 0 } } };
+	rsxkit_fp_desc bad = { 1, 0, 0, 0, { { 0 } } };
 	CHECK_EQ(rsxkit_fpgen_emit(&bad, words, RSXKIT_FP_MAX_WORDS, NULL), (uint64_t)RSXKIT_FP_EDESC);
 	/* Textura 1 sin ntex = 2. */
-	rsxkit_fp_desc bad2 = { 1, 1, { 0, 0 }, { { RSXKIT_FP_T1 } } };
+	rsxkit_fp_desc bad2 = { 1, 1, 0, 0, { { RSXKIT_FP_T1 } } };
 	CHECK_EQ(rsxkit_fpgen_emit(&bad2, words, RSXKIT_FP_MAX_WORDS, NULL), (uint64_t)RSXKIT_FP_EDESC);
 	/* Factor después del fin de la lista. */
-	rsxkit_fp_desc bad3 = { 1, 1, { 0, 0 }, { { RSXKIT_FP_T0, 0, RSXKIT_FP_C } } };
+	rsxkit_fp_desc bad3 = { 1, 1, 0, 0, { { RSXKIT_FP_T0, 0, RSXKIT_FP_C } } };
 	CHECK_EQ(rsxkit_fp_desc_canon(&bad3), (uint64_t)RSXKIT_FP_EDESC);
 	/* Factor desconocido y término más allá de nterms. */
-	rsxkit_fp_desc bad4 = { 1, 1, { 0, 0 }, { { RSXKIT_FP_FACTORS } } };
+	rsxkit_fp_desc bad4 = { 1, 1, 0, 0, { { RSXKIT_FP_FACTORS } } };
 	CHECK_EQ(rsxkit_fpgen_emit(&bad4, words, RSXKIT_FP_MAX_WORDS, NULL), (uint64_t)RSXKIT_FP_EDESC);
-	rsxkit_fp_desc bad5 = { 1, 1, { 0, 0 }, { { RSXKIT_FP_T0 }, { RSXKIT_FP_T0 } } };
+	rsxkit_fp_desc bad5 = { 1, 1, 0, 0, { { RSXKIT_FP_T0 }, { RSXKIT_FP_T0 } } };
 	CHECK_EQ(rsxkit_fpgen_emit(&bad5, words, RSXKIT_FP_MAX_WORDS, NULL), (uint64_t)RSXKIT_FP_EDESC);
-	rsxkit_fp_desc bad6 = { 3, 1, { 0, 0 }, { { 0 } } };
+	rsxkit_fp_desc bad6 = { 3, 1, 0, 0, { { 0 } } };
 	CHECK_EQ(rsxkit_fpgen_emit(&bad6, words, RSXKIT_FP_MAX_WORDS, NULL), (uint64_t)RSXKIT_FP_EDESC);
+}
+
+/* rsxkit_target_read: el más cercano solo cuando la región y la salida
+ * miden lo mismo (copia 1:1, las capas de 8 bits); al reducir, lineal; y
+ * con exact = 0, lineal siempre. */
+static void rsxkit_read_filter(void)
+{
+	CHECK(rsxkit_read_filter_nearest(336, 256, 336, 256, 1));
+	CHECK(rsxkit_read_filter_nearest(336, 16, 336, 16, 1));
+	CHECK(!rsxkit_read_filter_nearest(960, 720, 320, 240, 1));
+	CHECK(!rsxkit_read_filter_nearest(336, 256, 336, 128, 1));
+	CHECK(!rsxkit_read_filter_nearest(336, 256, 336, 256, 0));
+}
+
+/* El alfa del fragmento de un dibujo de rsxkit (rsxkit.h, rsxkit_draw.k):
+ * Σ_j (Π factores) · X_j.a con X_j.a = k[j][0][3] + (k[j][1][3] + k[j][2][3])·Ca,
+ * con el alfa de las texturas t0, t1 y el del vértice ca. */
+static float draw_alpha(const rsxkit_draw *d, float t0, float t1, float ca)
+{
+	float a = 0.0f;
+	unsigned n = d->nterms ? d->nterms : RSXKIT_K_LINCOMB;
+	for (unsigned j = 0; j < n; j++) {
+		float x = d->k[j][0][3] + (d->k[j][1][3] + d->k[j][2][3]) * ca, f = 1.0f;
+		if (d->nterms) {
+			for (unsigned i = 0; i < RSXKIT_K_FACTORS && d->factors[j][i]; i++) {
+				uint8_t q = d->factors[j][i];
+				f *= q == RSXKIT_FP_T0 || q == RSXKIT_FP_T0A ? t0 : q == RSXKIT_FP_T1 || q == RSXKIT_FP_T1A ? t1 : ca;
+			}
+		} else {
+			f = j == RSXKIT_K_T0 || j == RSXKIT_K_T0A ? t0 : j == RSXKIT_K_T1 || j == RSXKIT_K_T1A ? t1 : 1.0f;
+		}
+		a += f * x;
+	}
+	return a;
+}
+
+/* La pasada del alfa de RSXKIT_DSTA_ONE (lib/rsxkit/src/dsta.c): la mezcla
+ * del RSX no da una constante (el primer intento, con GCM_CONSTANT_ALPHA, dejó
+ * el alfa del fragmento en la PS3), así que una pasada solo en el alfa lo
+ * lleva a 1 o más en los mismos fragmentos que escribe el dibujo: con
+ * prueba de alfa, los que pasan α ≥ r (y ninguno más); sin ella, todos. */
+static void rsxkit_dsta_pass(void)
+{
+	rsxkit_draw d, b;
+	/* Ya 1 (solo el término constante): una pasada. */
+	memset(&d, 0, sizeof d);
+	d.k[RSXKIT_K_ONE][0][3] = 1.0f;
+	CHECK(rsxkit_dsta_alpha_is_one(&d));
+	d.k[RSXKIT_K_T0A][0][3] = 0.5f;
+	CHECK(!rsxkit_dsta_alpha_is_one(&d));
+	d.k[RSXKIT_K_T0A][0][3] = 0.0f;
+	d.k[RSXKIT_K_ONE][1][3] = 0.5f;  /* con el alfa del vértice */
+	CHECK(!rsxkit_dsta_alpha_is_one(&d));
+
+	/* Combinación lineal, α = 0,75·T0a, sin prueba: todo con 1 o más. */
+	memset(&d, 0, sizeof d);
+	d.k[RSXKIT_K_T0A][0][3] = 0.75f;
+	d.blend = RSXKIT_BLEND_ALPHA;
+	d.depth = RSXKIT_DEPTH_TEST | RSXKIT_DEPTH_WRITE;
+	d.edges = 8;
+	CHECK(rsxkit_dsta_alpha_pass(&d, &b));
+	CHECK_EQ(b.blend, RSXKIT_BLEND_OFF);
+	CHECK_EQ(b.dst_alpha, RSXKIT_DSTA_PASS);
+	CHECK_EQ(b.depth, RSXKIT_DEPTH_TEST);
+	CHECK_EQ(b.edges, 0);
+	CHECK_EQ(b.alpha_ref, 0);
+	for (int t = 0; t <= 255; t++)
+		CHECK(draw_alpha(&b, t / 255.0f, 0.0f, 0.0f) >= 1.0f);
+
+	/* Con prueba de alfa: la pasada pasa la suya (≥ 1) justo donde el dibujo
+	 * pasa la de él, con los alfas de 8 bits y en el umbral. */
+	static const uint8_t refs[] = { 1, 32, 96, 128, 200, 255 };
+	for (unsigned r = 0; r < sizeof refs; r++) {
+		memset(&d, 0, sizeof d);
+		d.k[RSXKIT_K_T0A][0][3] = 1.0f;
+		d.alpha_ref = refs[r];
+		CHECK(rsxkit_dsta_alpha_pass(&d, &b));
+		CHECK_EQ(b.alpha_ref, 255);
+		for (int t = 0; t <= 255; t++) {
+			bool a_pass = t >= refs[r];
+			bool b_pass = draw_alpha(&b, t / 255.0f, 0.0f, 0.0f) >= 1.0f;
+			if (a_pass != b_pass)
+				t_fail(__FILE__, __LINE__, "ref %u, alfa %d: el dibujo %s y la pasada %s", refs[r], t,
+				       a_pass ? "pasa" : "no", b_pass ? "pasa" : "no");
+			t_checks++;
+		}
+	}
+
+	/* Programa generado sin término constante: se agrega uno. */
+	memset(&d, 0, sizeof d);
+	d.nterms = 2;
+	d.factors[0][0] = RSXKIT_FP_T0A;
+	d.factors[0][1] = RSXKIT_FP_CA;
+	d.factors[1][0] = RSXKIT_FP_T1A;
+	d.k[0][0][3] = 1.0f;
+	d.k[1][0][3] = 0.5f;
+	CHECK(rsxkit_dsta_alpha_pass(&d, &b));
+	CHECK_EQ(b.nterms, 3);
+	CHECK_EQ(b.factors[2][0], 0);
+	for (int t = 0; t <= 255; t += 15)
+		CHECK(draw_alpha(&b, t / 255.0f, 1.0f - t / 255.0f, 0.5f) >= 1.0f);
+	/* Sin lugar para él, o con un programa propio, no se puede. */
+	d.nterms = RSXKIT_K_TERMS;
+	for (unsigned j = 0; j < RSXKIT_K_TERMS; j++)
+		d.factors[j][0] = RSXKIT_FP_C;
+	CHECK(!rsxkit_dsta_alpha_pass(&d, &b));
+	d.alpha_ref = 64;
+	CHECK(rsxkit_dsta_alpha_pass(&d, &b));  /* con prueba basta escalar */
+	d.program = (rsxkit_program *)&d;
+	CHECK(!rsxkit_dsta_alpha_pass(&d, &b));
 }
 
 void t_suite_fpgen(void)
 {
+	RUN(rsxkit_dsta_pass);
+	RUN(rsxkit_read_filter);
 	RUN(fpgen_refs_lincomb);
 	RUN(fpgen_refs_products);
 	RUN(fpgen_emit_forms);

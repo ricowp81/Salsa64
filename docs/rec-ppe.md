@@ -926,8 +926,27 @@ vpc y de sus bytes, así que:
   vuelta y la palabra de `ktlb[]` que compara al entrar parcheada en su
   código (`xoris`/`cmplwi`). Sus enlaces salientes siguen valiendo (son por
   vpc) y los entrantes se rehacen solos.
-- Un vaciado completo borra copias y estados; los ids de los desprendidos
-  se liberan solo al vaciar (si se agotan, se vacía, como antes).
+- Un vaciado completo borra copias y estados.
+
+**Copias en ranuras (2026-10-28).** Hasta aquí `x.copy[]` era 1 MB repartido
+en línea que no se recuperaba hasta un vaciado completo: Perfect Dark (143 220
+compilaciones en 318 s en la PS3, 32 500 bloques vivos) lo llenaba en el
+primer minuto y desde ahí ningún bloque nuevo tenía copia, así que cada
+escritura sobre su código lo mataba y cada overlay recargado se retraducía
+entero: 110 656 retraducciones idénticas (el 77 % de sus compilaciones, 6,4 s
+de los 318, en campos de 60–120 ms con 1700–1950 retraducciones de golpe);
+GoldenEye 4802 (15 %). Ahora las copias van en ranuras de 64, 128 y 256 bytes
+(por `bytes` del bloque, listas libres por clase enlazadas en la propia
+ranura) de un pool de 4 MB, y la ranura se libera cuando el bloque muere
+(`salsa64_rec_x_remove`, también desde el desalojo de un tramo). Los
+desprendidos retienen su id: hay un tope de 16 384 a la vez (por encima,
+invalidar mata como antes) y, si los ids se agotan, `make_room` los mata
+(`salsa64_rec_x_reclaim`, `stats.reclaimed`) antes de vaciar la caché entera.
+`jit-copias-viejas` en la consola y `SALSA64_REC_OLD_COPY=1` en el host
+(`SALSA64_REC_DBG_NO_COPY_FREE`) repiten el reparto viejo con su tope de 1 MB
+para el A/B con el mismo binario. Un bloque de KSEG0 sigue sin copia: ahí la
+retraducción idéntica (Banjo-Tooie 9,8 % de sus compilaciones, ~0,13 % del
+tiempo) no justifica el costo.
 
 ### Datos mapeados por la TLB (2026-10-10)
 

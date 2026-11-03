@@ -295,8 +295,69 @@ void salsa64_rec_x_flush(struct salsa64_rec *rec)
 	memset(rec->x.xhash, 0, sizeof rec->x.xhash);
 	memset(rec->x.xpage, 0, sizeof rec->x.xpage);
 	memset(rec->x.state, 0, sizeof rec->x.state);
+	memset(rec->x.copy_free, 0, sizeof rec->x.copy_free);
 	rec->x.copy_used = 0;
+	rec->x.ndetached = 0;
 	rec->x.count = 0;
+}
+
+unsigned salsa64_rec_x_reclaim(struct salsa64_rec *rec)
+{
+	struct salsa64_rec_x *x = &rec->x;
+	unsigned killed = 0;
+	for (unsigned id = 1; x->ndetached && id < rec->next_block; id++) {
+		if (x->state[id] != SALSA64_REC_X_DETACHED)
+			continue;
+		salsa64_rec_kill_block(rec, id);
+		killed++;
+	}
+	return killed;
+}
+
+/* ---- Copias de bytes (ranuras de 64, 128 y 256 bytes) ------------------------------ */
+
+static unsigned copy_class(uint32_t bytes)
+{
+	return bytes <= 64 ? 0 : bytes <= 128 ? 1 : 2;  /* MAX_BLOCK_BYTES = 256 */
+}
+
+uint32_t salsa64_rec_x_copy_alloc(struct salsa64_rec *rec, uint32_t bytes)
+{
+	struct salsa64_rec_x *x = &rec->x;
+	if (SALSA64_REC_OLD(rec, SALSA64_REC_DBG_NO_COPY_FREE)) {  /* lineal y sin liberar, como hasta 2026-10-28 */
+		if (x->copy_used + bytes > SALSA64_REC_X_COPY_OLD_BYTES)
+			return 0;
+		x->copy_used += bytes;
+		return x->copy_used - bytes + 1;
+	}
+	unsigned c = copy_class(bytes);
+	uint32_t size = 64u << c;
+	if (x->copy_free[c]) {
+		uint32_t off1 = x->copy_free[c];
+		memcpy(&x->copy_free[c], x->copy + off1 - 1, sizeof x->copy_free[c]);  /* la ranura libre guarda la siguiente */
+		return off1;
+	}
+	if (x->copy_used + size > SALSA64_REC_X_COPY_BYTES)
+		return 0;
+	x->copy_used += size;
+	return x->copy_used - size + 1;
+}
+
+void salsa64_rec_x_copy_free(struct salsa64_rec *rec, uint32_t off1, uint32_t bytes)
+{
+	struct salsa64_rec_x *x = &rec->x;
+	if (!off1 || SALSA64_REC_OLD(rec, SALSA64_REC_DBG_NO_COPY_FREE))
+		return;
+	unsigned c = copy_class(bytes);
+	memcpy(x->copy + off1 - 1, &x->copy_free[c], sizeof x->copy_free[c]);
+	x->copy_free[c] = off1;
+}
+
+static void copy_release(struct salsa64_rec *rec, unsigned id)
+{
+	struct salsa64_rec_x *x = &rec->x;
+	salsa64_rec_x_copy_free(rec, x->copy_off[id], rec->blocks[id].bytes);
+	x->copy_off[id] = 0;
 }
 
 void salsa64_rec_x_add(struct salsa64_rec *rec, unsigned id, uint64_t pc, uint32_t pa, unsigned seg, bool code)
@@ -316,12 +377,13 @@ void salsa64_rec_x_add(struct salsa64_rec *rec, unsigned id, uint64_t pc, uint32
 		uint16_t *p = &x->xpage[pa >> SALSA64_REC_PAGE_SHIFT];
 		b->pnext = *p;
 		*p = (uint16_t)id;
-		/* La copia de sus bytes, para engancharlo donde vuelva su página. */
+		/* La copia de sus bytes, para engancharlo donde vuelva su página
+		 * (o cuando lo reescriban con lo mismo). */
 		uint32_t bytes = rec->blocks[id].bytes;
-		if (code && seg == SALSA64_REC_MAPPED && x->copy_used + bytes <= SALSA64_REC_X_COPY_BYTES) {
-			memcpy(x->copy + x->copy_used, rec->cpu->rdram + pa, bytes);
-			x->copy_off[id] = x->copy_used + 1;
-			x->copy_used += bytes;
+		if (code && seg == SALSA64_REC_MAPPED) {
+			x->copy_off[id] = salsa64_rec_x_copy_alloc(rec, bytes);
+			if (x->copy_off[id])
+				memcpy(x->copy + x->copy_off[id] - 1, rec->cpu->rdram + pa, bytes);
 		}
 	}
 	x->count++;
@@ -348,9 +410,12 @@ bool salsa64_rec_x_detach(struct salsa64_rec *rec, unsigned id)
 	struct salsa64_rec_x *x = &rec->x;
 	if (!x->copy_off[id] || x->state[id] != SALSA64_REC_X_LIVE || SALSA64_REC_OLD(rec, SALSA64_REC_DBG_NO_DETACH))
 		return false;
+	if (x->ndetached >= SALSA64_REC_X_MAX_DETACHED && !SALSA64_REC_OLD(rec, SALSA64_REC_DBG_NO_COPY_FREE))
+		return false;  /* demasiados retenidos: matar, como antes */
 	salsa64_rec_block_detach(rec, id);  /* enlaces, banderas, code = 0 */
 	xpage_remove(x, id, rec->blocks[id].pa);
 	x->state[id] = SALSA64_REC_X_DETACHED;
+	x->ndetached++;
 	rec->stats.detached++;
 	return true;
 }
@@ -368,7 +433,10 @@ bool salsa64_rec_x_remove(struct salsa64_rec *rec, unsigned id)
 	uint32_t pa = rec->blocks[id].pa;
 	if (pa < rec->rdram_size && x->state[id] == SALSA64_REC_X_LIVE)
 		xpage_remove(x, id, pa);
+	if (x->state[id] == SALSA64_REC_X_DETACHED)
+		x->ndetached--;
 	x->state[id] = SALSA64_REC_X_LIVE;
+	copy_release(rec, id);
 	x->count--;
 	return true;
 }
@@ -440,6 +508,8 @@ unsigned salsa64_rec_x_rekey(struct salsa64_rec *rec, uint64_t pc, uint32_t pa)
 			continue;
 		if (!detached)
 			xpage_remove(x, id, old);
+		else
+			x->ndetached--;
 		xpage_add(x, id, pa);
 		x->state[id] = SALSA64_REC_X_LIVE;
 		if (p != head) {

@@ -6,6 +6,291 @@ NTSC backups); `docs/perf-log.md` has the detailed numbers and
 
 ## [Unreleased]
 
+## [0.2.16] — 2026-11-02
+
+### Fixed
+- **Conker's Bad Fur Day: after the elevator at the end of Heist the cutscene
+  was garbled and the game then showed a black screen with a few lines** (#68).
+  Conker ships one graphics microcode with eight data segments ("F3DEX",
+  "F3DEXBS", "F3DEXBG" and "F3DEXBGBS", with and without ".NoN") and switches
+  to "F3DEX.NoN" from that elevator on. The emulator recognised Conker's
+  microcode by its "F3DEXBG" name only, so that part of the game ran as plain
+  F3DEX2, which has no four-triangle command: almost nothing was drawn. Conker's
+  microcode is now recognised by its code, so every variant uses Conker's
+  graphics path. The file `conker-ucode-viejo` in `/dev_hdd0/salsa64/` restores
+  the old name-only detection.
+
+- **FIFA 99: the picture shook up and down in the menus and during matches**
+  (#69). The game shows interlaced 512 × 384 and 480 × 360 frames scaled to the
+  full screen, starting each field one line lower and alternating between two
+  buffers. Each field was shown on its own, so the image moved one line every
+  field. These scaled full frames are now woven like the 640 × 480 ones of
+  Indiana Jones. Resident Evil 2 and Rogue Squadron use the same kind of mode
+  and should stop shaking too. The file `vi-escalado-campos` in
+  `/dev_hdd0/salsa64/` restores the field-by-field presentation.
+- **FIFA 99: the screen stayed black after a match when choosing Continue**
+  (#69). When the game switches from the 512 × 384 menu framebuffers to the
+  480 × 360 match framebuffers it frees the old ones and allocates new heap
+  blocks in the same memory. The PS3 copies each displayed frame back to the
+  emulated RAM a little later than the N64 would have written it, and the copy
+  of the last menu frame landed after the first match frame: it overwrote the
+  header of a heap block with black pixels. Nothing noticed until the match
+  ended and the game freed that block, which crashed the game thread. The copy
+  of a frame no longer writes lines that a different, newer color image drew
+  in the meantime. Saved states made during an affected match already carry
+  the broken header: start a new match. The file `espejo-pisa-otras` in
+  `/dev_hdd0/salsa64/` restores the old behaviour.
+
+- **Conker's Bad Fur Day: models flickered in and out during the fight in the
+  vault** (#68). The starfield seen through the airlock is drawn one star at a
+  time, and with the ship and the models a frame needed up to ~2900 draws; the
+  graphics output buffer held 2642, so the rest of the frame was dropped. The
+  buffer now holds 3170 draws; the extra space comes from the texture staging
+  area, so overall memory use does not change.
+- **Conker's Bad Fur Day (USA): the Great Mighty Poo did not open his mouth and
+  Sweet Melody got stuck when entered straight from the Chapters menu** (#3).
+  The game's music manager starts a song by sending PLAY to the sequence
+  player and, on every game frame, treats a stopped player as a finished song
+  and drops its record. With the emulated CPU (faster than the real one) the
+  next game frame could arrive before the audio thread had processed the PLAY:
+  the record of the cave song was dropped, the song played without it, and the
+  markers that drive the Poo's mouth and the scene were lost. The emulator now
+  patches the game's PLAY routine in RAM, only when the original code is there,
+  so it waits for the audio thread to start the player (as the game already
+  does when it stops one). Only the USA retail ROM is affected; the file
+  `conker-musica-vieja` in `/dev_hdd0/salsa64/` turns the patch off.
+- **Donkey Kong 64 (USA): the DK Rap intro had no music, and it came in about
+  1.5 minutes late and out of sync with the lyrics** (#51). The game's music
+  manager starts a song and, on the next game frame, expects the audio thread
+  to have processed the PLAY; if the player is still stopped it stops it,
+  reloads the song from the ROM and sends PLAY again. With the emulated CPU
+  (faster than the real one) the switch to the rap scene fits a one-retrace
+  frame, the main thread ends up on the opposite field phase and every reload
+  lands just before the audio thread's frame: the song was reloaded 30 times
+  per second for ~96 s and never played (on ares the song loads once and plays
+  on the next frame). The emulator now patches that manager in RAM, only when
+  the original code is there, so a song whose PLAY is pending waits for the
+  player instead of being reloaded. Only the USA retail ROM is affected; the
+  file `dk64-musica-vieja` in `/dev_hdd0/salsa64/` turns the patch off.
+- **Dr. Mario 64: white panels in the game background (#62, regression of
+  0.2.15).** In a 16-bit color image the RDP stores the pixel coverage in the
+  RGBA5551 alpha bit, not the blender alpha: 1 for almost every mode (CLAMP and
+  ZAP), the old bit for WRAP/SAVE with image read, the texel bit in COPY and the
+  fill color bit in FILL. The RSX render-to-texture targets kept the fragment
+  alpha instead (rsxkit's "alpha 1" blend mode actually copied it), and since
+  0.2.15 that alpha reaches RDRAM copies: Dr. Mario 64 draws its translucent
+  panels into a 328 × 240 background image with alpha 0.375 and pastes it with
+  an alpha test every frame, so the score box, the bottle interior, Dr. Mario's
+  box and the level/speed boxes came out white (with the falling pill's trail
+  inside the bottle). The targets now get the RDP's bit (checked against ares:
+  identical bits in the whole image). The RSX blender cannot output a constant
+  alpha, so rsxkit writes alpha 1 with an extra alpha-only pass (same program,
+  depth test and alpha test) when the fragment alpha is not already 1; a boot
+  self-test logs what each `dst_alpha` mode leaves on the real RSX
+  (`rsxkit: autoprueba dst_alpha …`). The flag file `alfa-fragmento` in
+  `/dev_hdd0/salsa64/` restores the 0.2.15 behaviour; `copia-sin-alfa` still
+  works as before.
+
+## [0.2.15] — 2026-10-29
+
+### Changed
+- **Recompiler: TLB-mapped code rewritten with the same bytes is no longer
+  retranslated.** The byte copies that let a block be re-attached were a 1 MB
+  pool that was never recycled; Perfect Dark filled it in the first minute and
+  then retranslated every reloaded overlay (77 % of its compilations, 60–120 ms
+  stutters). Copies now live in 64/128/256-byte slots (4 MB) freed when the
+  block dies; detached blocks are reclaimed before a full cache flush. The
+  flag file `jit-copias-viejas` restores the old behaviour for A/B tests.
+- **Serial Interface timing:** a PIF RAM write DMA now takes about 65 µs and
+  the read DMA what the PIF needs for the joybus exchanges it carries (0.66 ms
+  for one controller or one Controller Pak block, 1.65 ms for four controllers;
+  constants measured by the ares project), instead of a flat 2 ms each way.
+  The file `si-ritmo-viejo` in `/dev_hdd0/salsa64/` restores the flat 2 ms.
+- **Data cache write-back cost:** the emulated CPU does not model the VR4300
+  caches, so writing back the whole data cache (`osWritebackDCacheAll`, or
+  `osWritebackDCache`/`osInvalDCache` of 8 KB or more) took 2,000 cycles
+  instead of the console's ~20 cycles per dirty line. Each full sweep now costs
+  10,240 cycles (half of the 512 lines dirty, 40 cycles each, as measured by the
+  ares project). The file `sin-barrido-cache` in `/dev_hdd0/salsa64/` makes it
+  free again.
+- **Heartbeat for games that never start:** the file `latido-siempre` in
+  `/dev_hdd0/salsa64/` makes the heartbeat report (pc, registers, last RCP
+  events, RDRAM dump) also for a game that never read the controller nor drew
+  anything, such as Toy Story 2 (#54).
+- **RetroAchievements Hardcore:** saving a state is now allowed in Hardcore
+  (loading stays blocked everywhere); turning Hardcore on with a game open no
+  longer switches the running game's mode: it applies from the next game.
+  Hardcore is not yet approved by RetroAchievements (approval will be requested
+  in April 2027, after 6 public months); regular achievements work meanwhile.
+
+### Fixed
+- **F-Zero X: white background and mis-shaded objects over the track.** The
+  RSP clips every triangle against the clip-ratio box before the RDP sees it,
+  and the RDP interpolates the shade linearly in screen space inside each
+  clipped piece; the HLE sent the whole triangle and the RSX interpolated with
+  perspective correction, so the background quads (two vertices near the
+  camera, far off screen) lost their shade and showed the raw texture, and the
+  horizon haze arrived late. The HLE now clips like the microcode (same
+  polygon, same fan, verified against the real F3DEX2 running in the host LLE)
+  and rsxkit interpolates the vertex shade linearly in screen space (the RSX
+  input bit that skips perspective correction, with the vertex program
+  pre-multiplying by w: no extra fragment instructions). Measured against ares
+  on the demo races: 19–27 dB → 30–37 dB (4×4 blocks); other games unchanged
+  within 0.1 dB. `sin-sombra-afin` in the data directory restores the previous
+  behaviour.
+- **Audio (ABI1, libultra synthesizer: Super Mario 64, Wave Race 64, GoldenEye,
+  Diddy Kong Racing, Donald Duck: Quack Attack…): POLEF with A_INIT now starts
+  like the real microcode.** The microcode does not zero the filter's two
+  previous samples on A_INIT: it takes them from its state scratch area in DMEM,
+  which holds what the last RESAMPLE (its last samples) or ENVMIXER (volume
+  lanes) left there, so a filter that starts right after a resample carries a
+  short decaying transient from those samples; mupen64plus-rsp-hle started
+  from zero. Measured against the real microcode task by task: Donald Duck
+  (Europe and USA) and Diddy Kong Racing go from one differing audio task to
+  none; the other ABI1 games were already identical. `audio-polef-cero` in
+  `/dev_hdd0/salsa64/` (`SALSA64_AUDIO_POLEF_ZERO=1` on the host) restores the
+  zero start.
+- **Worms Armageddon: slanted, striped image** (#57). Its S2DEX backgrounds
+  declare an image one texel wider than each row in memory (321 for 320-byte
+  rows); the microcode steps rows by the declared width rounded down to 8
+  bytes, the HLE stepped by the full width, so every row slid one texel and
+  the whole screen leaned. Measured against the real microcode: the logos,
+  title and language menu are now identical. `s2dex-paso-viejo` in
+  `/dev_hdd0/salsa64/` restores the old row step for comparison.
+- **LEGO Racers: flickering box around distant cars** (#34). The game draws
+  each distant car into a 32 × 32 image cleared with alpha 0 and pastes it
+  with an alpha test. When that image was a few frames old it was decoded
+  from RAM, and the emulator's RSX → RAM copies always set the alpha bit, so
+  the car came with its square background (often at the start of a race).
+  Copies of render-to-texture images now carry the RSX alpha into the
+  RGBA5551 alpha bit, as the RDP does; `copia-sin-alfa` in
+  `/dev_hdd0/salsa64/` restores the old copies for comparison.
+- **Paper Mario: dark rooms stayed completely black (Watt's light).** The game
+  builds the light mask with the RDP every frame: a 64 × 64 RGBA32 image on top
+  of its z-buffer, the same memory reread as an 8-bit image, loaded into TMEM
+  and then filled back with the z value before the full-screen darkness is
+  drawn with it. The HLE read the mask from RAM, where only the z-buffer was,
+  so everything outside the HUD was dark. Those small 32-bit images (up to
+  64 × 64, and the 8-bit image on the same memory) are now drawn by the PPE
+  straight into RAM, and the next frame's light uses them (one frame late);
+  the light around Mario and Watt's ability (C-Down) match the reference
+  emulator. The flag file `gfx-mascara32-rsx` restores the old behaviour
+  (`SALSA64_MASCARA32_RSX=1` on the host).
+- **Indiana Jones and the Infernal Machine: invisible Indy, half the screen
+  black and a console freeze after leaving a waterfall.** The graphics HLE
+  ran the game's secondary display lists (the ones Factor 5's microcode runs
+  before drawing) until a `B8000000 FFFFFFFF`, but some end with a plain
+  `B8000000 00000000`: it kept going through the vertex data behind them and
+  executed vertices as RDP commands (a colour image at 0x880000 for Indy's
+  model, a black rectangle over the right half). Like the real microcode
+  (checked with the low-level RSP on the Mac), any end-of-list command now
+  ends them; `f5-sublista-vieja` restores the old behaviour. One of those
+  bogus colour images, at 0x900000, outside the 8 MB of RDRAM, 455 pixels
+  wide, was followed by the first depth upload with an odd source width, and
+  the RSX stopped right there. Colour images that start outside RDRAM are now
+  ignored (the RDP has nowhere to write them), and depth uploads always use
+  an even source width (the extra texel never reaches the output).
+  `rsx-sin-blindaje` turns this off for comparison. If the RSX still hangs,
+  Salsa64 now logs the system's RSX exception (if any), the command buffer
+  around GET and PUT and the last rsxkit operations with their offsets, and
+  leaves `rsx-colgado-<field>/` (command buffer, the task being translated
+  and the black box) on disk before quitting; it no longer feeds or waits
+  for the RSX on the way out. An experimental `rsx-colgado` flag reboots the
+  console instead of returning to the XMB.
+- **Yoshi's Story: camera stutter when walking fast.** The game draws its
+  8-bit background layers with the RDP and reads them back from RAM in the
+  next task, so the emulator waited for the RSX to draw and copy them back on
+  every such task (8–13 ms each, the whole RSX queue and the CRT filter in
+  front). Those layers are now rasterised directly into RAM by the PPE (1:1
+  CI8 tiles, no filter, no blending; anything else falls back to the RSX for
+  that task), so there is nothing to wait for. The common case (16 × 16 tiles
+  copied 1:1) goes through an integer row-copy path; only odd triangles use
+  the generic floating-point rasteriser. `gfx-capas8-rsx` in
+  `/dev_hdd0/salsa64/` restores the RSX path; the log line "capas de 8 bits en
+  el PPE" counts tasks, pixels, time per path and waits avoided.
+- **Yoshi's Story: coloured dots on the edges of the background layers.** The
+  RSX copied those 8-bit layers to RAM with a linear filter at 1:1, which on
+  this hardware blends a fraction of the neighbouring pixel; the red channel is
+  a palette index there, so an index off by one became a stray colour at every
+  edge. 1:1 copies now use nearest sampling (`gfx-copia-lineal` in
+  `/dev_hdd0/salsa64/` restores the old filter for comparison).
+- **Yoshi's Story: 8-bit background layers are primed from RAM.** The game
+  draws its sky, hills and trees into three 336 × 256 8-bit images in strips;
+  when the RSX surface of such a layer was new or stale it started from
+  garbage, and the next copy to RAM carried that garbage into the rows the RDP
+  had not redrawn (black or old strips in the background). The layers are now
+  primed from RAM with the full 8-bit index, as 16-bit images already were
+  (`gfx-big8-sin-cebar` in `/dev_hdd0/salsa64/` disables it). The log line
+  "copias big8" now also reports copies made, pixels changed and layers primed.
+- **F-Zero X: distance fog on the track.** The game fogs the track with the
+  blender in 1-cycle mode (`FOG * shade alpha + input * (1 - shade alpha)` with
+  FORCE_BL, othermode L `0xFA006220`); the HLE only recognised that mix in
+  2-cycle mode, so the far track showed no fog and the course could be seen
+  building up at the horizon. Measured against the console (ares, demo races):
+  the far track went from 20-66 units darker than the console to within a few
+  units; the horizon haze still arrives later than on the console because the
+  shade (and the fog factor) is interpolated with perspective correction
+  instead of screen-linear as the RDP does. `sin-niebla-1ciclo` restores the
+  old behaviour.
+- **Forsaken 64 (USA): black screen after the intro** (#55). Right after the
+  intro the main thread writes back the data cache and sends a request to its
+  controller thread, which at that moment is waiting for the Serial Interface
+  to finish a write; libultra takes the request as the end of that write, the
+  request is lost and the main thread waits for its answer forever. On the
+  console the write-back of ~480 dirty cache lines takes long enough for the
+  write to finish first; with the data cache write-back cost above (and the
+  new Serial Interface timing) it does here too.
+- **Star Wars: Shadows of the Empire ran too fast** (#40). The game advances
+  its logic once per rendered frame and does not wait for the vertical blank;
+  the emulated graphics task finished in 0.3 ms, so it rendered about 75
+  frames per second. A new RCP pacing model estimates how long the real RSP
+  would take for each graphics task from what the HLE did (display list
+  commands, triangles and vertices, per microcode family) and does not end
+  the task earlier. It was calibrated against ares on 62 tasks of Super Mario
+  64, Shadows of the Empire, GoldenEye, F-Zero X and Zelda: Ocarina of Time
+  (average error 2–5 %). In the Battle of Hoth the game now draws about 47
+  frames per second (94 graphics tasks/s) against 42 in ares and 75 before;
+  the control games run as before or closer to ares, never slower. ares does
+  not time the RDP, so heavy fill-rate scenes on a real N64 can be slower
+  still. On by default only for Shadows of the Empire; `rsp-ritmo` turns it on
+  for every game, `rsp-ritmo-<code>` (the 4-character cartridge code shown in
+  the log) for one game, `sin-rsp-ritmo` turns it off, and the file may hold a
+  percentage (150 = 50 % slower RCP; about 37 frames per second in Hoth, 200
+  about 31). Details in `docs/ritmo-rcp.md`.
+- **Vigilante 8: 2nd Offense: explosions, smoke and the sun glare drew as
+  black squares.** The game paints each of them twice with the same quad: a
+  `MEM·A_IN` pass that darkens the background through the texture and an
+  additive `IN·A_FOG + MEM` pass (`G_RM_ADD`) with the colour texture. Both
+  were approximated as `IN·α + MEM·(1 − α)`, which with the opaque texture
+  alpha of the second pass left a black square. The RDP blender products the
+  RSX can do directly (`dst·α`, `src + dst·α`, `src·(1 − α) + dst·α`,
+  `src + dst`) now go through as such; `mezclas-viejas` restores the previous
+  classification for comparison. The game also renders
+  about 1.3 frames per field because the emulated RDP finishes almost at
+  once; `rsp-gfx-ciclos` (a number: the minimum length of a graphics task in
+  N64 cycles, default 30000) is a test switch to measure RDP pacing on the
+  console.
+- **Command & Conquer** (#38): limit oversized S2DEX backgrounds to their
+  scaled image; `s2dex-marco-viejo` restores the previous repetition.
+  Validated with synthetic lists and the real microcode.
+- **Indiana Jones** (#39): keep a stable window when alternating complete
+  interlaced frames. `vi-campos` restores the previous presentation.
+- **Vigilante 8** (#30): decode YUV16 textures instead of returning black;
+  `sin-yuv` restores the old path. The menu background uses this format;
+  the separate character/missile defects remain open.
+- **Memory between games** (#52/#47): release the 9 MiB save-state snapshot
+  after its writer stops. `memoria-estados-vieja` keeps the old allocation.
+  ROM loading now distinguishes insufficient memory from read errors,
+  including ZIP files, and PS3 log sizes no longer use unsupported `%zu`.
+- **Donkey Kong 64 (USA): black screen with music halfway through the new-game
+  intro** (#51). When the intro switches scene, the emulated CPU (faster than
+  the real one) fit two game frames in the same video retrace; the game
+  measured 0 retraces, divided 0 by 0 with floating-point exceptions enabled
+  and its main thread stopped. The emulator now rewrites, in RAM and only when
+  the original code is there, the cutscene path of that measurement so it
+  keeps a minimum of 1, as the game already does during gameplay. Only the
+  USA retail ROM is affected; the log says "arreglo de juego" when it applies.
+
 ## [0.2.14] — 2026-10-28
 
 ### Added

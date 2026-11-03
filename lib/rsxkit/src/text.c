@@ -19,7 +19,7 @@ _Static_assert(FONT_W == RSXKIT_FONT_W && FONT_H == RSXKIT_FONT_H && FONT_ASCENT
 
 static uint32_t bytes_per_pixel(rsxkit_format format)
 {
-	return format == RSXKIT_RGBA8888 || format == RSXKIT_XRGB8888 ? 4 : 2;
+	return format == RSXKIT_ARGB8888 || format == RSXKIT_RGBA8888 || format == RSXKIT_XRGB8888 ? 4 : 2;
 }
 
 uint32_t rsxkit_color(rsxkit_format format, uint32_t rgb)

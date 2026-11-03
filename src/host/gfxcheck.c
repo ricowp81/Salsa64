@@ -213,7 +213,9 @@ static void gather(struct imgset *s)
 		s->addr[s->n] = addr;
 		s->w[s->n] = w;
 		s->lh[s->n] = lh;
-		memcpy(s->pix[s->n], src, sizeof s->pix[0]);
+		/* El color: el byte alto es el alfa de los destinos con alfa (raster.c). */
+		for (unsigned k = 0; k < NPIX; k++)
+			s->pix[s->n][k] = src[k] & 0xFFFFFFu;
 		s->n++;
 	}
 }

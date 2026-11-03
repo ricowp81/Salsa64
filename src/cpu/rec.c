@@ -1321,6 +1321,12 @@ static void make_room(struct salsa64_rec *rec)
 		evict_segment(rec, (rec->cur_hot + 1) % SALSA64_REC_HOT_SEGMENTS);
 	if (rec_space(rec))
 		return;
+	if (!rec_ids_ok(rec) && rec->x.ndetached && !SALSA64_REC_OLD(rec, SALSA64_REC_DBG_NO_COPY_FREE)) {
+		/* Los desprendidos retienen su id: recuperarlos antes que vaciar todo. */
+		rec->stats.reclaimed += salsa64_rec_x_reclaim(rec);
+		if (rec_space(rec))
+			return;
+	}
 	if (!rec_ids_ok(rec) || SALSA64_REC_OLD(rec, SALSA64_REC_OPT_NO_EVICT))
 		salsa64_rec_flush_why(rec, !rec->free_block && rec->next_block > SALSA64_REC_MAX_BLOCKS ? SALSA64_REC_FLUSH_IDS
 				      : !rec->free_link && rec->next_link >= SALSA64_REC_MAX_LINKS ? SALSA64_REC_FLUSH_LINKS

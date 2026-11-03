@@ -49,7 +49,7 @@ static void cuelgue_avisa_una_vez(void)
 {
 	nsaid = 0;
 	clock_us = 1000000;
-	cuelgue_reset(&cg);
+	cuelgue_reset(&cg, false);
 	for (int i = 0; i < 12; i++)
 		CHECK(!tick(true, true, true));  /* vivo: nada */
 	/* Sin actividad: nada hasta CUELGUE_US, y entonces avisa una sola vez. */
@@ -75,24 +75,44 @@ static void cuelgue_no_avisa_sin_motivo(void)
 	/* Un juego que nunca dio señales de vida: no está colgado. */
 	nsaid = 0;
 	clock_us = 1000000;
-	cuelgue_reset(&cg);
+	cuelgue_reset(&cg, false);
 	for (int i = 0; i < 60; i++)
 		CHECK(!tick(false, true, true));
 	CHECK_EQ(nsaid, 0);
 	/* En pausa (o sin juego) tampoco, aunque no haya actividad. */
-	cuelgue_reset(&cg);
+	cuelgue_reset(&cg, false);
 	for (int i = 0; i < 12; i++)
 		tick(true, true, true);
 	for (int i = 0; i < 60; i++)
 		CHECK(!tick(false, false, true));
 	CHECK_EQ(nsaid, 0);
 	/* Ni con el VI quieto (de eso se ocupa el latido de los hilos). */
-	cuelgue_reset(&cg);
+	cuelgue_reset(&cg, false);
 	for (int i = 0; i < 12; i++)
 		tick(true, true, true);
 	for (int i = 0; i < 60; i++)
 		CHECK(!tick(false, true, false));
 	CHECK_EQ(nsaid, 0);
+}
+
+/* Con latido-siempre avisa también de un juego que nunca dio señales de vida. */
+static void cuelgue_avisa_siempre(void)
+{
+	nsaid = 0;
+	clock_us = 1000000;
+	cuelgue_reset(&cg, true);
+	int fired = 0;
+	for (int i = 0; i < 60; i++)
+		fired += tick(false, true, true);
+	CHECK_EQ(fired, 1);
+	CHECK(strstr(said[0], "no lee los controles"));
+	/* Sigue sin avisar en pausa ni con el VI quieto. */
+	cuelgue_reset(&cg, true);
+	for (int i = 0; i < 60; i++)
+		CHECK(!tick(false, false, true));
+	cuelgue_reset(&cg, true);
+	for (int i = 0; i < 60; i++)
+		CHECK(!tick(false, true, false));
 }
 
 static void cuelgue_texto(void)
@@ -115,7 +135,7 @@ static void cuelgue_texto(void)
 	CHECK(strstr(text, "sin SYNC_FULL ni corte 2"));
 	CHECK(strstr(text, "DP +5000"));
 	CHECK(strstr(text, "SI: STATUS 00000411"));
-	CHECK(strstr(text, "SI +187500"));
+	CHECK(strstr(text, "SI +6098"));
 	CHECK(strstr(text, "tarea -"));
 	CHECK(strstr(text, "eventos del RCP"));
 	/* Un búfer chico se corta sin pasarse. */
@@ -132,7 +152,7 @@ static void cuelgue_volcado(void)
 	CHECK(mkdtemp(dir) != NULL);
 	nsaid = 0;
 	clock_us = 1000000;
-	cuelgue_reset(&cg);
+	cuelgue_reset(&cg, false);
 	t_wr32(0x1000, 0xCAFEBABE);
 	CPU->cur_pc = 0xFFFFFFFF80000400ull;
 	for (int i = 0; i < 12; i++)
@@ -182,6 +202,7 @@ void t_suite_cuelgue(void)
 {
 	RUN(cuelgue_avisa_una_vez);
 	RUN(cuelgue_no_avisa_sin_motivo);
+	RUN(cuelgue_avisa_siempre);
 	RUN(cuelgue_texto);
 	RUN(cuelgue_volcado);
 }

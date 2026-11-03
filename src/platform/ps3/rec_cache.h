@@ -175,4 +175,16 @@ static inline int salsa64_ps3_rec_jtc_stats_wanted(void)
 	return stat(SALSA64_RECJTCSTATS_FLAG, &st) == 0;
 }
 
+/* Las copias de bytes de los bloques mapeados van en ranuras que se liberan
+ * al morir el bloque (SALSA64_REC_DBG_NO_COPY_FREE apagado); con el archivo
+ * jit-copias-viejas vuelven al reparto lineal de 1 MB sin liberar de antes
+ * del 2026-10-28 (para el A/B: Perfect Dark retraducía sus overlays). */
+#define SALSA64_RECOLDCOPY_FLAG SALSA64_DATA_DIR "/jit-copias-viejas"
+
+static inline int salsa64_ps3_rec_old_copy_wanted(void)
+{
+	struct stat st;
+	return stat(SALSA64_RECOLDCOPY_FLAG, &st) == 0;
+}
+
 #endif

@@ -77,6 +77,8 @@ static void decode_ext(const struct salsa64_rec *rec, uint32_t i, struct dec *d)
 		decode_promote(rec, i, d);
 	if (SALSA64_REC_OLD(rec, SALSA64_REC_DBG_NO_CACHE) && I_OP(i) == 0x2F)
 		d->how = H_EXEC;  /* CACHE al intérprete, como antes */
+	if (I_OP(i) == 0x2F && I_RT(i) == 0x01 && rec->cpu->dcache_sweep_cycles)
+		d->how = H_NATIVE;  /* el barrido de la caché de datos lo cobra emit_cache, nunca el intérprete */
 }
 
 /* ---- Camino lento ---------------------------------------------------------------- */
@@ -288,20 +290,54 @@ static bool emit_unaligned_pair(struct ctx *c, unsigned k, unsigned end)
 
 /* ---- CACHE ----------------------------------------------------------------------- */
 
+/* El barrido de la caché de datos (interp.c, dcache_sweep), en la sección
+ * fría: sus ciclos van a r29, la base de `cycles = r29 + k + 1`, así que
+ * todo lo que sigue en el bloque y su salida ya los cuentan. Si el bloque
+ * ya no cabe antes del próximo evento, sale después de k (como el
+ * intérprete, que lo atiende tras esta instrucción). */
+static void emit_cache_sweep(struct ctx *c, unsigned k, int sweep, int resume, uint32_t cycles)
+{
+	unsigned sec = c->sec;
+	c->sec = SEC_COLD;
+	bind(c, sweep);
+	int32_t lo = (int16_t)(cycles & 0xFFFF), hi = (int32_t)((cycles - (uint32_t)lo) >> 16);
+	if (hi)
+		E(c, ppc_addis(R_CYCLES, R_CYCLES, hi));
+	if (lo)
+		E(c, ppc_addi(R_CYCLES, R_CYCLES, lo));
+	E(c, ppc_lwz(T_X, OFF(dcache_sweeps), R_CPU));
+	E(c, ppc_addi(T_X, T_X, 1));
+	E(c, ppc_stw(T_X, OFF(dcache_sweeps), R_CPU));
+	E(c, ppc_addi(0, R_CYCLES, (int32_t)c->n));
+	E(c, ppc_cmpld(CR_T, 0, R_NEXT));
+	emit_bc(c, PPC_BO_TRUE_UNLIKELY, PPC_BI(CR_T, PPC_GT), exit_label(c, k, true, true));
+	emit_b(c, resume, false);
+	c->sec = sec;
+}
+
 /* Sin cachés emuladas (interp.c): en modo kernel, el único en que corre un
  * bloque, solo falta la dirección sin alinear a 4 (error de dirección, que
- * lanza el intérprete). */
+ * lanza el intérprete). Index_Writeback_Invalidate de la caché de datos
+ * (0x01) sobre la línea 0 empieza un barrido y cobra su costo
+ * (salsa64_cpu_set_dcache_sweep, decidido al compilar). */
 static void emit_cache(struct ctx *c, unsigned k)
 {
 	uint32_t i = c->d[k].w;
-	int slow = new_label(c), resume = new_label(c);
+	uint32_t sweep_cycles = I_RT(i) == 0x01 ? c->rec->cpu->dcache_sweep_cycles : 0;
+	int slow = new_label(c), resume = new_label(c), sweep = sweep_cycles ? new_label(c) : -1;
 	unsigned base = get(c, I_RS(i), T_ADDR);
 	E(c, ppc_addi(T_ADDR, base, (int16_t)i));
 	E(c, ppc_rlwinm(0, T_ADDR, 0, 30, 31));
 	E(c, ppc_cmpwi(0, 0, 0));
 	emit_bc(c, PPC_BO_FALSE_UNLIKELY, PPC_BI(0, PPC_EQ), slow);
+	if (sweep_cycles) {
+		E(c, ppc_andi_(0, T_ADDR, 0x1FF0));  /* línea 0 de las 512 de 16 bytes */
+		emit_bc(c, PPC_BO_TRUE_UNLIKELY, PPC_BI(0, PPC_EQ), sweep);
+	}
 	bind(c, resume);
 	emit_slow_exec(c, k, k, slow, resume);
+	if (sweep_cycles)
+		emit_cache_sweep(c, k, sweep, resume, sweep_cycles);
 }
 
 /* ---- COP0: MFC0 y DMFC0 ------------------------------------------------------- */

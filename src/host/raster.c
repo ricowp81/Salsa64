@@ -30,6 +30,7 @@
 
 #include "core/endian.h"
 #include "core/rcp.h"
+#include "rdp/mask32.h"
 #include "rdp/targets.h"
 
 #define MAX_DEPTHS 4
@@ -51,6 +52,26 @@ struct depth {
 
 static struct rdp_targets tg;
 static uint32_t rgb[RDP_TARGETS_MAX][RASTER_W * RASTER_H];
+/* Alfa en los destinos, como la PS3 (salsa64_rdp_target_alpha): las
+ * imágenes de 16 bits que no son del ancho del VI llevan el bit de alfa de
+ * RGBA5551 en el byte alto de rgb, al revés para que lo de siempre (0) sea
+ * opaco: RGB_TRANSP es alfa 0. Lo escriben como el RSX: nace en 0, un
+ * dibujo deja lo que diga su cobertura (gfx_draw.cvg_bit), un relleno su
+ * bit, una copia el del texel, el cebado el de la RDRAM; lo leen las
+ * texturas de un destino y, con raster_copy_alpha, la copia a la RDRAM. */
+#define RGB_TRANSP 0xFF000000u
+static bool slot_alpha[RDP_TARGETS_MAX];
+bool raster_target_alpha = true;
+bool raster_copy_alpha = true;
+bool raster_cvg_alpha = true;
+bool raster_alpha_all = false;  /* diagnóstico: el bit en todas las de 16 bits (raster.h) */
+/* Cómo escribe el alfa el dibujo en curso en un destino con alfa (como
+ * rsxkit_draw.dst_alpha en rdp.c): DSTA_ONE, alfa 1; DSTA_FRAG, el del
+ * fragmento; DSTA_FILL, el del relleno (fill_alpha); DSTA_KEEP, el del
+ * destino; DSTA_MAX, el mayor de los dos. */
+enum { DSTA_ONE, DSTA_FRAG, DSTA_FILL, DSTA_KEEP, DSTA_MAX };
+static int dst_alpha_mode;
+static bool fill_alpha;
 static uint32_t scratch[RASTER_W * RASTER_H];  /* copia del ligado cuando un dibujo lo lee */
 static int scratch_slot;
 static struct rdp_box scratch_dirty;  /* lo dibujado en esa ranura después de copiarla (como rdp.c) */
@@ -67,12 +88,21 @@ uint32_t raster_field;
 int raster_fbfx = 2;
 bool raster_q5 = true;
 bool raster_aa_edges = false;
+bool raster_affine = true;
+bool raster_rsx_safe = true;
 float raster_edge_width = 1.5f;  /* como rdp.c: 1,5 píxeles de la N64 */
 float raster_edge_factor = 8.0f, raster_edge_units = 64.0f;  /* su desplazamiento de polígono (rsxkit) */
 static struct rdp_vi_ring vi_ring;
 static uint32_t primes, readbacks, mirrors, frames, dma_skipped;
 static uint32_t all_draws, edge_draws, edge_tris;  /* dibujos, y los que llevaron aristas */
+static uint32_t cvg_draws[4];  /* dibujos de los ciclos 1 y 2 en un destino con alfa, por GFX_CVG_* */
+static uint32_t big_copies;    /* copias de imágenes de otro ancho que el VI que no caben en un espejo */
 static uint32_t draws8, tex8_rsx, tex8_rdram;    /* dibujos en imágenes de 8 bits; I8 leídas de ellas */
+/* Imágenes chicas de 32 bits dibujadas en software (mask32.h, como el PPE
+ * en la PS3): tareas, dibujos, píxeles, bytes a la RDRAM y las que quedaron
+ * aquí. SALSA64_MASCARA32_RSX=1 las deja al rasterizador, como antes. */
+static uint32_t m32_tasks, m32_draws, m32_pixels, m32_bytes, m32_refused;
+static int m32_on = -1;
 uint32_t ps3_rb, ps3_rb_old;  /* diagnóstico (SALSA64_PS3_RB) */
 static struct rdp_dma_ring dma_ring;
 
@@ -109,16 +139,29 @@ static int get_target(const struct gfx_job *job, uint32_t addr, uint32_t width, 
 	bool fresh;
 	*created = false;
 	/* Como rdp.c: una color image imposible no toca la tabla. */
-	if (!width || width > 640 || min_lh > 480) {
-		if (raster_trace_fb)
+	enum rdp_cimg_bad bad = rdp_cimg_impossible(addr, width, min_lh, raster_rsx_safe ? job->rdram_size : 0);
+	if (bad != RDP_CIMG_OK) {
+		if (bad == RDP_CIMG_RDRAM) {
+			static unsigned said;
+			if (said++ < 10)
+				fprintf(stderr, "fb: campo %u tarea %u: color image %06x/%u fuera de la RDRAM (%u KB; alto pedido %u): "
+					"se ignora\n", raster_field, task_no, addr, width, job->rdram_size >> 10, min_lh);
+		} else if (raster_trace_fb) {
 			fprintf(stderr, "fb: campo %u tarea %u: color image imposible %06x/%u (alto %u): se ignora\n", raster_field,
 				task_no, addr, width, min_lh);
+		}
 		return -1;
 	}
 	int i = rdp_targets_get(&tg, addr, width, siz, min_lh, &fresh);
 	*created = fresh;
 	if (fresh) {
-		memset(rgb[i], 0, sizeof rgb[i]);
+		/* Como rdp.c (alpha_wanted): la superficie con alfa nace con alfa 0. */
+		slot_alpha[i] = raster_target_alpha && tg.t[i].bpp == 2 && (raster_alpha_all || tg.t[i].width != tg.vi_width);
+		if (slot_alpha[i])
+			for (uint32_t k = 0; k < RASTER_W * RASTER_H; k++)
+				rgb[i][k] = RGB_TRANSP;
+		else
+			memset(rgb[i], 0, sizeof rgb[i]);
 		tg.t[i].fmt = (uint8_t)fmt;
 		rb_wanted_task[i] = 0;
 	}
@@ -204,7 +247,7 @@ static void fetch(const struct gfx_tex *t, const struct texsrc *s, int x, int y,
 		out[0] = (c >> 16 & 0xFF) / 255.0f;
 		out[1] = (c >> 8 & 0xFF) / 255.0f;
 		out[2] = (c & 0xFF) / 255.0f;
-		out[3] = 1.0f;
+		out[3] = (c & RGB_TRANSP) ? 0.0f : 1.0f;
 		if (s->intensity)
 			out[1] = out[2] = out[3] = out[0];
 		return;
@@ -297,13 +340,16 @@ static void shade(const struct gfx_draw *d, const struct gfx_vertex *v, const st
 	/* ZMODE_XLU: estrictamente delante, o el z-buffer aún borrado. */
 	if ((d->depth & GFX_DEPTH_LESS) && zb && z >= zb->z[idx] && zb->z[idx] < 1.0f)
 		return;
-	/* Interpolación con perspectiva. */
+	/* Coordenadas de textura con corrección de perspectiva. */
 	float p0 = b0 * t3->iw[0], p1 = b1 * t3->iw[1], p2 = b2 * t3->iw[2], pw = p0 + p1 + p2;
 	p0 /= pw, p1 /= pw, p2 /= pw;
 	float c[4], s = p0 * v[0].s + p1 * v[1].s + p2 * v[2].s, t = p0 * v[0].t + p1 * v[1].t + p2 * v[2].t;
 	const uint8_t *c0 = &v[0].r, *c1 = &v[1].r, *c2 = &v[2].r;
+	/* El sombreado (y con él el factor de niebla) lineal en pantalla, como
+	 * el RDP (raster_affine); si no, también con perspectiva. */
+	float q0 = raster_affine ? b0 : p0, q1 = raster_affine ? b1 : p1, q2 = raster_affine ? b2 : p2;
 	for (int k = 0; k < 4; k++)
-		c[k] = (p0 * c0[k] + p1 * c1[k] + p2 * c2[k]) / 255.0f;
+		c[k] = (q0 * c0[k] + q1 * c1[k] + q2 * c2[k]) / 255.0f;
 
 	float tx[2][4] = { { 1, 1, 1, 1 }, { 1, 1, 1, 1 } };
 	for (int i = 0; i < d->ntex && i < 2; i++) {
@@ -380,12 +426,26 @@ static void shade(const struct gfx_draw *d, const struct gfx_vertex *v, const st
 		return;
 	}
 	for (int l = 0; l < 3; l++) {
-		if (d->blend == GFX_BLEND_ALPHA)
-			out[l] = out[l] * out[3] + dst[l] * (1.0f - out[3]);
-		else if (d->blend == GFX_BLEND_ADD)
-			out[l] = clamp01(out[l] * out[3] + dst[l]);
+		switch (d->blend) {
+		case GFX_BLEND_ALPHA:     out[l] = out[l] * out[3] + dst[l] * (1.0f - out[3]); break;
+		case GFX_BLEND_ADD:       out[l] = clamp01(out[l] * out[3] + dst[l]); break;
+		case GFX_BLEND_MUL:       out[l] = dst[l] * out[3]; break;
+		case GFX_BLEND_ADD_MUL:   out[l] = clamp01(out[l] + dst[l] * out[3]); break;
+		case GFX_BLEND_ALPHA_INV: out[l] = out[l] * (1.0f - out[3]) + dst[l] * out[3]; break;
+		case GFX_BLEND_ADD_ONE:   out[l] = clamp01(out[l] + dst[l]); break;
+		default:                  break;
+		}
 	}
-	tg_rgb[idx] = channel(out[0], q5) << 16 | channel(out[1], q5) << 8 | channel(out[2], q5);
+	/* El bit de alfa: la copia del RSX a la RDRAM corta en 0x80. */
+	uint32_t transp = 0;
+	switch (dst_alpha_mode) {
+	case DSTA_FILL: transp = fill_alpha ? 0 : RGB_TRANSP; break;
+	case DSTA_FRAG: transp = out[3] < 0.5f ? RGB_TRANSP : 0; break;
+	case DSTA_KEEP: transp = old & RGB_TRANSP; break;
+	case DSTA_MAX:  transp = (old & RGB_TRANSP) && out[3] < 0.5f ? RGB_TRANSP : 0; break;
+	default:        break;
+	}
+	tg_rgb[idx] = transp | channel(out[0], q5) << 16 | channel(out[1], q5) << 8 | channel(out[2], q5);
 	if ((d->depth & GFX_DEPTH_WRITE) && zb)
 		zb->z[idx] = z;
 }
@@ -637,10 +697,24 @@ static void viscvg(const struct gfx_job *job, int cur, const struct gfx_draw *d)
 static void prime(const struct gfx_job *job, int slot)
 {
 	const struct rdp_target *t = &tg.t[slot];
-	if (!raster_fbfx || t->bpp != 2 || !job->rdram_ea)
+	/* Como rdp.c: las capas de 8 bits grandes (big8) también, con el
+	 * índice en los tres canales (la copia toma el rojo). */
+	bool x8 = t->bpp == 1 && t->width > 128;
+	if (!raster_fbfx || (t->bpp != 2 && !x8) || !job->rdram_ea)
 		return;
 	const uint8_t *rdram = (const uint8_t *)(uintptr_t)job->rdram_ea;
 	uint32_t w = t->width < RASTER_W ? t->width : RASTER_W, h = t->lh < RASTER_H ? t->lh : RASTER_H;
+	if (x8) {
+		for (uint32_t y = 0; y < h; y++) {
+			uint32_t a = t->addr + y * t->width;
+			if (a + w > job->rdram_size)
+				break;
+			for (uint32_t x = 0; x < w; x++)
+				rgb[slot][y * RASTER_W + x] = (uint32_t)rdram[a + x] * 0x010101u;
+		}
+		primes++;
+		return;
+	}
 	for (uint32_t y = 0; y < h; y++) {
 		uint32_t a = t->addr + y * t->width * 2;
 		if (a + w * 2 > job->rdram_size)
@@ -648,7 +722,8 @@ static void prime(const struct gfx_job *job, int slot)
 		for (uint32_t x = 0; x < w; x++) {
 			uint32_t p = salsa64_rd16(rdram + a + 2 * x);
 			uint32_t r = p >> 11, g = (p >> 6) & 31, b = (p >> 1) & 31;
-			rgb[slot][y * RASTER_W + x] = (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2);
+			uint32_t transp = slot_alpha[slot] && !(p & 1) ? RGB_TRANSP : 0;
+			rgb[slot][y * RASTER_W + x] = transp | (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2);
 		}
 	}
 	primes++;
@@ -667,8 +742,9 @@ static int locate_any(uint32_t addr)
 	return -1;
 }
 
-/* Copia a la RDRAM como RGBA5551 (sin cobertura: alfa 1) lo que el RDP
- * pudo escribir del destino: la caja `b` (rdp_box), nunca filas enteras. */
+/* Copia a la RDRAM como RGBA5551 lo que el RDP pudo escribir del destino:
+ * la caja `b` (rdp_box), nunca filas enteras. El bit de alfa, el del
+ * destino si lo lleva y raster_copy_alpha (como rdp.c, rb_argb); si no, 1. */
 static void readback(const struct gfx_job *job, int slot, const struct rdp_box *b)
 {
 	const struct rdp_target *t = &tg.t[slot];
@@ -677,6 +753,9 @@ static void readback(const struct gfx_job *job, int slot, const struct rdp_box *
 	uint32_t w = t->width < RASTER_W ? t->width : RASTER_W, h = b->y1 < RASTER_H ? b->y1 : RASTER_H;
 	uint32_t x1 = b->x1 < w ? b->x1 : w;
 	uint8_t *rdram = (uint8_t *)(uintptr_t)job->rdram_ea;
+	uint32_t changed = 0;  /* traza: píxeles que la copia cambia en la RDRAM */
+	/* Como rdp.c (rb_argb): un framebuffer que nació con alfa, como antes. */
+	bool copy_alpha = raster_copy_alpha && slot_alpha[slot] && !t->presented && t->width != tg.vi_width;
 	for (uint32_t y = b->y0; y < h; y++) {
 		uint32_t a = t->addr + y * t->width * t->bpp;
 		if (a + x1 * t->bpp > job->rdram_size)
@@ -685,13 +764,19 @@ static void readback(const struct gfx_job *job, int slot, const struct rdp_box *
 			uint32_t c = rgb[slot][y * RASTER_W + x];
 			if (t->bpp == 1) {
 				/* Imagen de 8 bits: la intensidad es el rojo (como rdp.c). */
+				changed += rdram[a + x] != (uint8_t)(c >> 16);
 				rdram[a + x] = (uint8_t)(c >> 16);
 				continue;
 			}
-			uint32_t p = ((c >> 19) & 31) << 11 | ((c >> 11) & 31) << 6 | ((c >> 3) & 31) << 1 | 1;
+			uint32_t abit = copy_alpha && (c & RGB_TRANSP) ? 0 : 1;
+			uint32_t p = ((c >> 19) & 31) << 11 | ((c >> 11) & 31) << 6 | ((c >> 3) & 31) << 1 | abit;
+			changed += salsa64_rd16(rdram + a + 2 * x) != (uint16_t)p;
 			salsa64_wr16(rdram + a + 2 * x, (uint16_t)p);
 		}
 	}
+	if (raster_trace_fb && t->bpp == 1)
+		fprintf(stderr, "fb: campo %u tarea %u: la copia de %06x/%u cambió %u píxeles de la RDRAM\n", raster_field,
+			task_no, t->addr, t->width, changed);
 }
 
 /* Espejo del framebuffer (como frame_mirror en rdp.c): lo dibujado desde
@@ -746,7 +831,7 @@ static void tall_fill_target(int i, const struct rdp_tall_rect *r, bool drawn[RD
 		return;
 	for (int y = ya; y < yb && y < RASTER_H; y++)
 		for (int x = xa; x < xb && x < RASTER_W; x++)
-			rgb[i][y * RASTER_W + x] = r->color;
+			rgb[i][y * RASTER_W + x] = r->color | (slot_alpha[i] && !r->color ? RGB_TRANSP : 0);
 	rdp_targets_drawn(&tg, i);
 	drawn[i] = true;
 	struct rdp_box b = { (uint16_t)xa, (uint16_t)ya, (uint16_t)xb, (uint16_t)yb };
@@ -796,6 +881,21 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 	++task_no;  /* tg.field lo lleva el VI (raster_vi), como en la PS3 */
 	if (!(job->flags & GFX_JOB_DPC_CONT))
 		rdp_targets_task(&tg);
+	/* Como done en la PS3 (rdp.c): las imágenes chicas de 32 bits van a la
+	 * RDRAM antes de traducir; sus destinos no se dibujan aquí. */
+	if (m32_on < 0)
+		m32_on = !getenv("SALSA64_MASCARA32_RSX");
+	struct mask32_result m32;
+	memset(&m32, 0, sizeof m32);
+	if (m32_on && raster_fbfx >= 2 && job->rdram_ea) {
+		mask32_run((uint8_t *)(uintptr_t)job->rdram_ea, job->rdram_size, cmd, res->cmd_bytes, vtx, m.base[0],
+			   m.base[1], &m32);
+		m32_tasks += m32.n > 0;
+		m32_draws += m32.draws;
+		m32_pixels += m32.pixels;
+		m32_bytes += m32.bytes + m32.restored;
+		m32_refused += m32.refused;
+	}
 	scratch_slot = -1;
 	last_job = *job;
 #ifdef SALSA64_GFX_TRACE
@@ -811,6 +911,15 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 		switch (c->op) {
 		case GFX_OP_TARGET: {
 			uint32_t lh = scissor_bottom(cmd, off + c->size, res->cmd_bytes), siz = c->c & 0xFF;
+			bool sw32 = false;
+			for (uint32_t k = 0; k < m32.n; k++)
+				sw32 |= m32.addr[k] == c->a && m32.width[k] == c->b;
+			if (sw32) {
+				/* Ya está en la RDRAM (mask32): ni se dibuja ni se copia. */
+				cur = -1;
+				tall.rows = 0;
+				break;
+			}
 			if (getenv("SALSA64_PS3_RB")) {
 				/* Diagnóstico: cuántas color images pediría copiar la regla
 				 * de readbacks_wanted de la PS3 (src/rdp/rdp.c), con el ancho
@@ -827,10 +936,13 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 				frame_start = c->a != first_cimg;
 				first_cimg = c->a;
 			}
-			bool is_tall = c->b && c->b <= 640 && rdp_targets_tall(c->b, lh) &&
+			/* Fuera de la RDRAM (rdp_cimg_impossible): ni destino, ni reparto
+			 * de rellenos, ni reciclar una ranura por ella (como rdp.c). */
+			bool outside = raster_rsx_safe && job->rdram_size && c->a >= job->rdram_size;
+			bool is_tall = !outside && c->b && c->b <= 640 && rdp_targets_tall(c->b, lh) &&
 				       fills_only(cmd, off + c->size, res->cmd_bytes);
 			bool created;
-			if (!is_tall && c->b && c->b <= 640 && lh <= 480) {
+			if (!outside && !is_tall && c->b && c->b <= 640 && lh <= 480) {
 				int v = rdp_targets_recycled(&tg, c->a, c->b, siz, lh);
 				if (v >= 0 && drawn[v])
 					flush_recycled(job, v, &drawn_box[v]);
@@ -980,6 +1092,26 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 			 * exacta en todo el dibujo, no la de cada vértice entre su w. */
 			float prim_z = (d->depth & GFX_DEPTH_PRIM) ? gfx_prim_z(vtx + d->h.a, d->h.b) : 0.0f;
 			bool q5 = tg.t[cur].bpp == 2 && raster_q5;
+			/* Como rdp.c (to_rsxkit, rsxkit_draw.dst_alpha): en un destino
+			 * con alfa, un relleno deja su bit, una copia el alfa del texel y
+			 * los ciclos 1 y 2 su cobertura (gfx_draw.cvg_bit); sin
+			 * raster_cvg_alpha (alfa-fragmento), el alfa del fragmento. */
+			dst_alpha_mode = DSTA_ONE;
+			if (slot_alpha[cur]) {
+				static const uint8_t cvg_mode[] = {
+					[GFX_CVG_ONE] = DSTA_ONE, [GFX_CVG_KEEP] = DSTA_KEEP,
+					[GFX_CVG_ALPHA] = DSTA_FRAG, [GFX_CVG_MAX] = DSTA_MAX,
+				};
+				if (d->cycle == 3 /* G_CYC_FILL */) {
+					dst_alpha_mode = DSTA_FILL;
+					fill_alpha = d->aref >= 128;
+				} else if (d->cycle == 2 /* G_CYC_COPY */ || !raster_cvg_alpha) {
+					dst_alpha_mode = DSTA_FRAG;
+				} else {
+					dst_alpha_mode = d->cvg_bit < sizeof cvg_mode ? cvg_mode[d->cvg_bit] : DSTA_ONE;
+					cvg_draws[d->cvg_bit & 3]++;
+				}
+			}
 			/* Como rdp.c: las aristas antes, en los dibujos opacos con AA_EN. */
 			if (d->aa && !(d->depth & GFX_DEPTH_DECAL)) {
 				for (uint32_t i = 0; raster_aa_edges && i + 3 <= d->h.b; i += 3)
@@ -991,6 +1123,7 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 			draws8 += tg.t[cur].bpp == 1;
 			for (uint32_t i = 0; i + 3 <= d->h.b; i += 3)
 				draw_clipped(d, vtx + d->h.a + i, src, rgb[cur], q5, zb, prim_z, false);
+			dst_alpha_mode = 0;
 			if (!drawn[cur])
 				rdp_targets_drawn(&tg, cur);
 			drawn[cur] = true;
@@ -1037,9 +1170,16 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 		uint32_t rows = box->y1 < t->lh ? box->y1 : t->lh;
 		/* Como la PS3: la copia pedida también en la tarea anterior va sin
 		 * esperar y la imagen sigue siendo del RDP (targets.h). */
+		/* Como readbacks_wanted de la PS3, también una imagen de 16 bits de
+		 * otro ancho que el VI que no cabe en un espejo (abajo): el fondo de
+		 * 328 × 240 de Dr. Mario 64, que el juego dibuja una vez y pega en
+		 * cada cuadro leyéndolo de la RDRAM. El host no la copiaba y el
+		 * fondo salía de la RDRAM sin dibujar; la PS3 sí. */
+		bool big_aux = t->bpp == 2 && t->width <= 640 && t->width != tg.vi_width && !t->presented && vi_ring.n &&
+			       t->width * t->bpp * rows > MIRROR_BYTES;
 		bool wanted = raster_fbfx >= 2 && (rdp_readback_wanted(&vi_ring, t->addr, t->width, t->bpp == 2 ? 2 : 0) ||
 				       (t->bpp == 1 && t->width > 128 && t->width != vi_ring.cur_width && t->width <= 640 && vi_ring.n &&
-					!rdp_vi_ring_covers(&vi_ring, t->addr, t->width)));
+					!rdp_vi_ring_covers(&vi_ring, t->addr, t->width)) || big_aux);
 		bool again = rb_wanted_task[i] && rb_wanted_task[i] + 1 == tg.task;
 		if (wanted)
 			rb_wanted_task[i] = tg.task;
@@ -1049,6 +1189,7 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 			readback(job, i, box);
 			rb_task[i] = tg.task;
 			readbacks++;
+			big_copies += big_aux;
 			if (raster_trace_fb)
 				fprintf(stderr, "fb: campo %u tarea %u: copia a la RDRAM del destino %06x/%u: %u..%u × %u..%u (alto "
 					"conjeturado %u)\n", raster_field, task_no, t->addr, t->width, box->x0, box->x1, box->y0, rows,
@@ -1074,6 +1215,19 @@ void raster_task(const struct gfx_job *job, const struct gfx_result *res)
 	}
 }
 
+static struct rdp_present last_present = { .slot = -1 };
+
+bool raster_last_present(uint32_t *addr, uint32_t *width, uint32_t *y0, uint32_t *h)
+{
+	if (last_present.slot < 0 || last_present.slot >= RDP_TARGETS_MAX || !tg.t[last_present.slot].used)
+		return false;
+	*addr = tg.t[last_present.slot].addr;
+	*width = tg.t[last_present.slot].width;
+	*y0 = last_present.y0;
+	*h = last_present.h;
+	return true;
+}
+
 void raster_vi(const struct salsa64_vi_frame *f)
 {
 	rdp_vi_ring_frame(&vi_ring, f);
@@ -1083,6 +1237,7 @@ void raster_vi(const struct salsa64_vi_frame *f)
 	 * no reproducía la política de la consola. */
 	struct rdp_present out;
 	rdp_targets_present(&tg, f, ++vi_field, &out);
+	last_present = out;
 	/* Como la PS3: un framebuffer dibujado que aún no se copió a la RDRAM
 	 * (no se sabía que lo era al terminar su tarea) se copia al
 	 * presentarlo, solo las filas que muestra el VI. */
@@ -1094,6 +1249,7 @@ void raster_reset(void)
 {
 	memset(&tg, 0, sizeof tg);
 	memset(rgb, 0, sizeof rgb);
+	memset(slot_alpha, 0, sizeof slot_alpha);
 	scratch_slot = 0;
 	memset(depths, 0, sizeof depths);
 	next_depth = 0;
@@ -1101,7 +1257,11 @@ void raster_reset(void)
 	memset(&vi_ring, 0, sizeof vi_ring);
 	primes = readbacks = mirrors = frames = dma_skipped = tex_decoded_here = 0;
 	all_draws = edge_draws = edge_tris = 0;
+	memset(cvg_draws, 0, sizeof cvg_draws);
+	big_copies = 0;
 	draws8 = tex8_rsx = tex8_rdram = 0;
+	m32_tasks = m32_draws = m32_pixels = m32_bytes = m32_refused = 0;
+	mask32_forget();
 	raster_zauto = 0;
 	first_cimg = cimg_task = 0;
 	frame_start = false;
@@ -1132,6 +1292,21 @@ void raster_8bit_stats(uint32_t *draws, uint32_t *tex_rsx, uint32_t *tex_rdram)
 	*tex_rdram = tex8_rdram;
 }
 
+void raster_mask32_stats(uint32_t *tasks, uint32_t *draws, uint32_t *pixels, uint32_t *bytes, uint32_t *refused)
+{
+	*tasks = m32_tasks;
+	*draws = m32_draws;
+	*pixels = m32_pixels;
+	*bytes = m32_bytes;
+	*refused = m32_refused;
+}
+
+void raster_alpha_stats(uint32_t cvg[4], uint32_t *big)
+{
+	memcpy(cvg, cvg_draws, sizeof cvg_draws);
+	*big = big_copies;
+}
+
 void raster_edge_stats(uint32_t *draws, uint32_t *with_edges, uint32_t *tris)
 {
 	*draws = all_draws;
@@ -1149,6 +1324,16 @@ const uint32_t *raster_image(uint32_t addr, uint32_t *width)
 		}
 	}
 	return NULL;
+}
+
+bool raster_image_alpha(uint32_t addr)
+{
+	for (int i = 0; i < RDP_TARGETS_MAX; i++) {
+		const struct rdp_target *t = &tg.t[i];
+		if (t->used && addr >= t->addr && addr < t->addr + t->width * t->bpp * t->lh)
+			return slot_alpha[i];
+	}
+	return false;
 }
 
 const uint32_t *raster_slot_image(int slot)
@@ -1172,7 +1357,7 @@ bool raster_target_info(int slot, uint32_t *addr, uint32_t *width, uint32_t *bpp
 #define RASTER_STATE(X)                                                                              \
 	X(tg) X(rgb) X(scratch) X(scratch_slot) X(depths) X(next_depth) X(task_no) X(vi_field) X(vi_ring) \
 	X(primes) X(readbacks) X(mirrors) X(frames) X(dma_skipped) X(dma_ring) X(rb_task) X(rb_wanted_task) \
-	X(last_job) X(tex_decoded_here)
+	X(last_job) X(tex_decoded_here) X(slot_alpha)
 #define RASTER_SIZE(v) + sizeof(v)
 size_t raster_state_size(void)
 {

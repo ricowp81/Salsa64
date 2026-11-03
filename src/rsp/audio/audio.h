@@ -33,6 +33,10 @@
 /* Conserva la aproximacion anterior cuando no caben todos los rangos
  * escritos en aud_result: agrandar siempre el ultimo. */
 #define AUD_JOB_RANGES_OLD 0x00000001u
+/* POLEF de ABI1 con A_INIT como en mupen64plus-rsp-hle (estado inicial cero)
+ * en vez de como el microcódigo real, que lo toma de la zona de estados de
+ * la DMEM que dejó el último RESAMPLE o ENVMIXER (ver aud_state.scratch). */
+#define AUD_JOB_POLEF_INIT_ZERO 0x00000002u
 
 struct aud_state_job {
 	uint64_t ea;
@@ -139,6 +143,13 @@ struct aud_state {
 	int16_t lut[64 * 4];
 	uint32_t lut_src;
 	bool lut_ok;
+	/* Zona de estados del microcódigo de ABI1 en la DMEM (0xF90; 0 en los
+	 * demás ABI y con AUD_JOB_POLEF_INIT_ZERO): ahí deja RESAMPLE sus 4
+	 * muestras y el acumulador y ENVMIXER sus 80 bytes de estado, y de ahí
+	 * (+4, +6) toma POLEF con A_INIT las dos muestras previas en vez de
+	 * ponerlas a cero (medido con el microcódigo real: docs/audio-censo.md).
+	 * La HLE la lleva en su propia DMEM. Se fija en cada tarea; no se guarda. */
+	uint16_t scratch;
 	const struct aud_job *job;
 	struct aud_result *res;
 	void *io;               /* estado de la plataforma (io_mem.c, src/spu/audio) */

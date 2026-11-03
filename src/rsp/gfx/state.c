@@ -50,6 +50,7 @@ static const struct field tile[] = {
 #define F(f) { offsetof(struct gfx_state, f), sizeof(((struct gfx_state *)0)->f) }
 static const struct field regs2[] = {
 	F(k4), F(k5),
+	F(k0), F(k1), F(k2), F(k3),
 };
 #undef F
 
@@ -117,7 +118,7 @@ bool gfx_state_unpack_regs(struct gfx_state *g, const uint8_t in[GFX_STATE_REGS]
 	return true;
 }
 
-/* 4 de la versión + 70 de los registros + 8 × 21 de las tiles + 4 de K4 y K5. */
-_Static_assert(4 + 70 + 8 * 21 + 4 <= GFX_STATE_REGS, "los registros del RDP no caben en GFX_STATE_REGS");
+/* 4 de la versión + 70 de los registros + 8 × 21 de las tiles + 12 de K0–K5. */
+_Static_assert(4 + 70 + 8 * 21 + 12 <= GFX_STATE_REGS, "los registros del RDP no caben en GFX_STATE_REGS");
 _Static_assert(sizeof(((struct gfx_state *)0)->tmem) == GFX_STATE_BYTES - GFX_STATE_REGS,
 	       "la TMEM no es lo que resta de GFX_STATE_BYTES");

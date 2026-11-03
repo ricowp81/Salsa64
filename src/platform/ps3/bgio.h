@@ -35,6 +35,10 @@ bool bgio_out_write(void *ctx, const void *data, uint32_t len);
 /* Escribe `len` bytes en la posición absoluta `offset` (vacía el búfer
  * antes) y deja el archivo ahí. Firma de salsa64_state_patch_fn. */
 bool bgio_out_patch(void *ctx, uint32_t offset, const uint8_t *data, uint32_t len);
+/* Vacía el búfer y pide al sistema que lleve el archivo al disco
+ * (sysLv2FsFsync): para lo que se escribe antes de un cierre forzado, que
+ * puede terminar con la consola apagada a la fuerza. */
+bool bgio_out_sync(struct bgio_out *o);
 /* Con ok: vacía el búfer, cierra y renombra `tmp` a `path` (si el sistema
  * no reemplaza, quita el viejo y repite). Sin ok o si algo falla: cierra y
  * borra `tmp`. Devuelve si quedó escrito; en `err` (n bytes), el motivo. */

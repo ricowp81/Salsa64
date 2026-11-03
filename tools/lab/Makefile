@@ -17,7 +17,7 @@ LDLIBS := -lm -pthread
 # El mismo conjunto que src/host/Makefile, sin cpu/rec.c (lo incluye rec-lab.c).
 CORE_SRCS := $(filter-out $(SRC)/src/cpu/rec.c,$(wildcard $(SRC)/src/core/*.c $(SRC)/src/cpu/*.c $(SRC)/src/rsp/gfx/*.c \
              $(SRC)/src/rsp/audio/*.c $(SRC)/src/rsp/jpeg/*.c $(SRC)/src/rsp/lle/*.c)) \
-             $(SRC)/src/frontend/savefile.c $(SRC)/src/rdp/targets.c \
+             $(SRC)/src/frontend/savefile.c $(SRC)/src/rdp/targets.c $(SRC)/src/rdp/mask32.c \
              $(wildcard $(SRC)/src/rdp/vmatch.c $(SRC)/src/rdp/gfxdump.c $(SRC)/src/rdp/blackbox.c)
 OBJS := $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(CORE_SRCS)) $(OUT)/obj/rec-lab.o
 HOST_OBJS := $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(CORE_SRCS) $(wildcard $(SRC)/src/host/*.c)) $(OUT)/obj/lab-trace.o

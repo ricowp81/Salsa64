@@ -223,6 +223,17 @@ static int choose(const struct rdp_targets *s, uint32_t addr, uint32_t width, ui
 	return i;
 }
 
+enum rdp_cimg_bad rdp_cimg_impossible(uint32_t addr, uint32_t width, uint32_t min_lh, uint32_t rdram_size)
+{
+	if (!width || width > 640)
+		return RDP_CIMG_WIDTH;
+	if (min_lh > 480)
+		return RDP_CIMG_HEIGHT;
+	if (rdram_size && addr >= rdram_size)
+		return RDP_CIMG_RDRAM;
+	return RDP_CIMG_OK;
+}
+
 int rdp_targets_recycled(const struct rdp_targets *s, uint32_t addr, uint32_t width, uint32_t siz, uint32_t min_lh)
 {
 	int kind;
@@ -539,6 +550,7 @@ void rdp_targets_present(struct rdp_targets *s, const struct salsa64_vi_frame *f
 	    field - s->shown_field <= 2 && covers(&s->t[s->shown], f->origin, &best_y0))
 		best = s->shown;
 
+	uint32_t previous_field = s->shown_field;
 	s->shown = best;
 	s->shown_origin = f->origin;
 	s->shown_field = field;
@@ -546,8 +558,10 @@ void rdp_targets_present(struct rdp_targets *s, const struct salsa64_vi_frame *f
 		s->t[best].presented = true;
 	out->slot = best;
 	out->y0 = out->w = out->h = out->age = 0;
-	if (best < 0)
+	if (best < 0) {
+		s->il_weave = false;
 		return;
+	}
 	const struct rdp_target *t = &s->t[best];
 	out->age = age[best];
 	out->y0 = best_y0;
@@ -574,16 +588,30 @@ void rdp_targets_present(struct rdp_targets *s, const struct salsa64_vi_frame *f
 		 * alinea a k filas según la fila de la trama en que cae. */
 		int32_t v0 = (int32_t)(f->vpos * k) - 2 * (int32_t)best_y0;
 		uint32_t y0p = best_y0 - f->vpos % k % (best_y0 + 1);
-		if (s->il_valid && s->il_slot == best && v0 - s->il_v0 >= -(int32_t)k && v0 - s->il_v0 <= (int32_t)k &&
+		/* Indy alterna dos cuadros completos, uno desde la fila 1 y otro
+		 * desde la 2, con V_VIDEO desplazado también. La ventana común debe
+		 * sobrevivir al cambio de búfer; limitarla a una ranura hacía temblar
+		 * el cuadro aunque cada superficie ya tuviera las 480 líneas. */
+		bool weave = f->weave && k == 1 && rows <= t->lh - best_y0;
+		bool same_frame = s->il_slot == best ||
+			(weave && s->il_weave && field - previous_field == 1 && s->il_width == t->width &&
+			 s->il_height == t->lh && s->il_bpp == t->bpp);
+		if (s->il_valid && same_frame && v0 - s->il_v0 >= -(int32_t)k && v0 - s->il_v0 <= (int32_t)k &&
 		    s->il_y0 <= best_y0 && best_y0 - s->il_y0 <= k)
 			y0p = s->il_y0;
 		s->il_valid = true;
 		s->il_slot = best;
 		s->il_v0 = v0;
 		s->il_y0 = y0p;
+		s->il_weave = weave;
+		s->il_width = t->width;
+		s->il_height = t->lh;
+		s->il_bpp = t->bpp;
 		out->y0 = y0p;
-	} else if (k > 1) {
-		out->y0 = best_y0 - best_y0 % k;
+	} else {
+		s->il_weave = false;
+		if (k > 1)
+			out->y0 = best_y0 - best_y0 % k;
 	}
 	out->h = rows < t->lh - out->y0 ? rows : t->lh - out->y0;
 }
@@ -694,6 +722,61 @@ bool rdp_dma_since(const struct rdp_dma_ring *r, uint32_t lo, uint32_t hi, uint3
 			return true;
 	}
 	return false;
+}
+
+void rdp_claim_note(struct rdp_claim_ring *r, uint32_t addr, uint32_t line, uint32_t lo, uint32_t hi, uint32_t task)
+{
+	if (hi <= lo)
+		return;
+	uint32_t n = __atomic_load_n(&r->n, __ATOMIC_RELAXED);
+	/* Las de la misma tarea van seguidas: si ya está esta color image, se
+	 * agranda (una tarea cambia de color image varias veces: la z, el
+	 * framebuffer, otra vez el framebuffer). */
+	for (uint32_t i = 0; i < n && i < RDP_CLAIM_RING; i++) {
+		uint32_t k = (n - 1 - i) % RDP_CLAIM_RING;
+		if (r->e[k].task != task)
+			break;
+		if (r->e[k].addr == addr && r->e[k].line == line) {
+			uint32_t nlo = r->e[k].lo < lo ? r->e[k].lo : lo, nhi = r->e[k].hi > hi ? r->e[k].hi : hi;
+			r->e[k].lo = nlo;
+			r->e[k].hi = nhi;
+			__atomic_thread_fence(__ATOMIC_RELEASE);
+			return;
+		}
+	}
+	uint32_t k = n % RDP_CLAIM_RING;
+	r->e[k].lo = lo;
+	r->e[k].hi = hi;
+	r->e[k].addr = addr;
+	r->e[k].line = line;
+	r->e[k].task = task;
+	__atomic_store_n(&r->n, n + 1, __ATOMIC_RELEASE);
+}
+
+int rdp_claims_after(const struct rdp_claim_ring *r, uint32_t addr, uint32_t line, uint32_t lo, uint32_t hi,
+		     uint32_t task, struct rdp_claim *out, int max)
+{
+	uint32_t n = __atomic_load_n(&r->n, __ATOMIC_ACQUIRE);
+	if (n > RDP_CLAIM_RING && (int32_t)(r->e[n % RDP_CLAIM_RING].task - task) > 0)
+		return -1;  /* la más vieja que queda ya es posterior: pudo perderse alguna */
+	uint32_t m = n < RDP_CLAIM_RING ? n : RDP_CLAIM_RING;
+	int k = 0;
+	for (uint32_t i = 0; i < m && max > 0; i++) {
+		uint32_t j = (n - 1 - i) % RDP_CLAIM_RING;
+		uint32_t elo = r->e[j].lo, ehi = r->e[j].hi;
+		if ((int32_t)(r->e[j].task - task) <= 0 || (r->e[j].addr == addr && r->e[j].line == line) ||
+		    elo >= hi || ehi <= lo)
+			continue;
+		if (k < max) {
+			out[k].lo = elo;
+			out[k].hi = ehi;
+			k++;
+		} else {
+			out[max - 1].lo = elo < out[max - 1].lo ? elo : out[max - 1].lo;
+			out[max - 1].hi = ehi > out[max - 1].hi ? ehi : out[max - 1].hi;
+		}
+	}
+	return k;
 }
 
 uint32_t rdp_guard_hash(const uint8_t *line)

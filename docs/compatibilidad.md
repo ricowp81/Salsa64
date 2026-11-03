@@ -10,6 +10,46 @@ el [radar de compatibilidad](compatibilidad/index.html). Sus datos están en
 
 Las entradas antiguas conservan sus métodos de prueba como historia.
 
+## 2026-11-02 — Reporte #68 (Conker's Bad Fur Day)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| Conker's Bad Fur Day | desde el ascensor del final de Heist, la sala y Conker se ven en el host como con el microcódigo real (falta la PS3) | ahí el juego cambia a su variante «F3DEX.NoN» (mismo código que «F3DEXBG.NoN»), que por el texto se tomaba por F3DEX2: sin G_TRI4, pantalla negra con líneas. Ahora el código de Conker se reconoce por su CRC (`1B4ACE88` en palabras); `conker-ucode-viejo` vuelve al texto. La luz de la HLE sigue algo más baja que la del microcódigo real, como en el resto del juego |
+| Conker's Bad Fur Day (pelea de la bóveda) | sin tareas cortadas en el host (falta la PS3) | las estrellas de la esclusa, un dibujo cada una, y la nave llegan a ~2900 dibujos por tarea; el búfer de comandos pasa de 1280 a 1536 KB (3170 dibujos), sacados del arena de texturas |
+
+## 2026-11-02 — Reporte #69 (FIFA 99)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| FIFA 99 (USA) | imagen quieta en el menú y el partido en el host (antes la ventana presentada saltaba una fila cada campo; falta la PS3) | cuadros entrelazados escalados (512 × 384 a 1,6 y 480 × 360 a 1,5, dos búferes): se tejen como los de 640 × 480 (`vi-escalado-campos` vuelve a por campos). Resident Evil 2 (436 × 382) y Rogue Squadron (640 × 335) cambian igual |
+| FIFA 99 (USA) | «Continue» tras el partido sigue a la tabla de posiciones en el host con el estado del reporte y la cabecera del heap repuesta (falta la PS3) | en la PS3, el espejo del último cuadro del menú (512 × 384) pisaba la cabecera de un bloque del heap que el juego ya había puesto detrás del framebuffer del partido (480 × 360); al acabar el partido, al soltar ese bloque, AdEL y pantalla negra. El espejo ya no escribe lo que otra color image dibujó después (`espejo-pisa-otras` vuelve a como antes). El estado del reporte ya trae la cabecera rota: hay que jugar un partido nuevo |
+
+## 2026-10-31 — Reporte #62 (Dr. Mario 64)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| Dr. Mario 64 | paneles del fondo de la partida y de la demostración otra vez bien en el host, con el bit de alfa idéntico a ares (falta la PS3) | regresión de la v0.2.15: los destinos de render a textura guardaban el alfa del fragmento y no la cobertura del RDP; `alfa-fragmento` vuelve a lo de la v0.2.15. Las píldoras que no se ven mientras caen son otro problema, anterior |
+
+## 2026-10-29 — Vigilante 8: 2nd Offense (blender)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| Vigilante 8: 2nd Offense | explosiones, humo y resplandor del sol con mezcla (host; falta la PS3) | el juego los pinta en dos pasadas con el mismo cuadrilátero: MEM·A_IN con el color en negro y encima IN·A_FOG + MEM (G_RM_ADD); la HLE las clasificaba como IN·α + MEM·(1 − α) y quedaba un cuadro negro. Modos nuevos de gfx_blend (`dst·α`, `src + dst·α`, `src·(1 − α) + dst·α`, `src + dst`) hasta el RSX; `mezclas-viejas` vuelve a la clasificación anterior. Escenas del host de SM64, Zelda, MK64, GoldenEye y F-Zero X sin cambios |
+
+## 2026-10-29 — Reportes #57 y #34 (rama gh-worms-lego, sin probar en la PS3)
+
+| Juego | Estado | Notas |
+|---|---|---|
+| Worms Armageddon | imagen derecha en el host, idéntica al microcódigo real en logos, título y menú de idioma | los fondos de S2DEX declaran `imageW` una columna más ancho que la fila; el paso de las filas ya es el del microcódigo (`s2dex-paso-viejo` vuelve al de antes) |
+| LEGO Racers | sin el cuadro alrededor de los autos lejanos en el host | las copias a la RDRAM de los destinos con alfa llevan su alfa (`copia-sin-alfa` vuelve a alfa 1); falta confirmarlo en la PS3 |
+
+## 2026-10-29 — Reportes de Paper Mario y Mystical Ninja
+
+| Juego | Estado | Notas |
+|---|---|---|
+| Paper Mario | cuartos oscuros con la luz de Mario y de Watt (host; falta la PS3) | antes todo negro salvo el HUD; la máscara de luz (RGBA32 e I8 de 64 × 64 sobre el z-buffer) la dibuja el PPE (`gfx-mascara32-rsx` vuelve a lo de antes). Comparado contra ares en la cueva oscura del castillo de Bowser, con y sin el poder de Watt |
+| Mystical Ninja Starring Goemon (Undub) | créditos finales negros y sin música, también en la consola | la tabla de archivos del parche le da al archivo 1154 (créditos) 61 708 bytes comprimidos en vez de ~130: el descompresor del juego sigue leyendo basura sin fin. Con la ROM de EE. UU. sin parche, sin probar hasta el final |
+
 ## 2026-10-22 — Candidata de la v0.2.10 (microcódigos)
 
 | Juego | Estado | Notas |
@@ -274,7 +314,7 @@ asigna velocidad.
 | Juego | Estado | Velocidad | Notas |
 |---|---|---:|---|
 | Banjo-Tooie | Jugable | 59,7 campos/s de mediana en la sesión de perfilado | Prueba larga; escenas pesadas limitadas por el camino lento del recompilador. |
-| F-Zero X | Jugable; carrera y «SELECT COURSE» superados | — | A 5×. Quedan objetos del fondo dibujados sobre la pista. |
+| F-Zero X | Jugable; carrera y «SELECT COURSE» superados | — | A 5×. Niebla de la pista desde la rama `fzero-niebla` (blender en un ciclo; `sin-niebla-1ciclo` la apaga). El fondo de las pistas con la sombra del RDP (recorte contra la caja del clip ratio como el RSP + sombreado lineal en pantalla en el RSX; `sin-sombra-afin` lo apaga), pendiente de la PS3. |
 | Pokémon Snap | Jugable | — | Orden de dibujo incorrecto: la correa de la mochila queda delante y la playa delante de las montañas. |
 | Zelda: Ocarina of Time | Jugable | — | Se probaron salas con fondos prerrenderizados; el registro de la sesión informa 149–150 fondos S2DEX por ventana. |
 | GoldenEye 007 | Jugable | — | Incluido en la regresión; sin medición de velocidad atribuible a esta prueba en el censo. |
@@ -321,7 +361,7 @@ como antecedente; el de 2026-10-15 es el más reciente.
 | Super Smash Bros. (y Smash Remix) | velocidad completa | desde v0.2.4 pasa los KO y el Castillo de Hyrule se ve bien (confirmado en la PS3 real); en v0.2.3 y anteriores se congelaba en el primer KO (`/dev_hdd0/salsa64/fbfx.cfg` con un `1` lo evitaba) |
 | Doom 64 | ~40 % | limitado por el CPU |
 | Banjo-Tooie | jugable en la PS3 (primera prueba) | desafío del CIC 6105 de la PIF; confirmado en la PS3 real el 2026-10-13 |
-| F-Zero X | jugable en la PS3 (v0.2.6) | bus abierto del PI (sondeo del 64DD), el microcódigo que recarga a mitad de lista (F3DEX → F3DFLX) y los brillos de los autos por tabla; a 5× se colgaba en «SELECT COURSE» hasta la v0.2.6; quedan objetos del fondo pintados sobre la pista (sombra afín del RDP tras el recorte) |
+| F-Zero X | jugable en la PS3 (v0.2.6) | bus abierto del PI (sondeo del 64DD), el microcódigo que recarga a mitad de lista (F3DEX → F3DFLX) y los brillos de los autos por tabla; a 5× se colgaba en «SELECT COURSE» hasta la v0.2.6; la niebla de la pista (blender FOG·A_SHADE en un solo ciclo con FORCE_BL, que la HLE solo tomaba en dos ciclos) desde la rama `fzero-niebla`, `sin-niebla-1ciclo` la apaga; el fondo de las pistas (objetos del fondo pintados sobre la pista, bruma del horizonte tardía) era la sombra afín del RDP tras el recorte del RSP: desde la rama `fzero-afin` la HLE recorta contra la caja del clip ratio como el microcódigo y el RSX interpola el sombreado lineal en pantalla (`sin-sombra-afin` lo apaga); contra ares, las carreras de la demo pasan de 19–27 a 30–37 dB en 4×4; falta la PS3 |
 | Diddy Kong Racing | pantalla negra | microcódigo propio de Rare; en desarrollo con el RSP a bajo nivel |
 | Resident Evil 2 | no jugable | microcódigo de Capcom |
 

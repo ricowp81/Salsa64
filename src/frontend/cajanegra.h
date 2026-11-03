@@ -71,5 +71,13 @@ void cajanegra_request(void);
 /* Una vez por vuelta de presentación: arranca la escritura pedida y recoge
  * el resultado de la anterior. */
 void cajanegra_pump(uint64_t now_us);
+/* Para un cierre forzado (el RSX colgado): escribe el anillo entero ya, sin
+ * comprimir y en el hilo que llama, a `path` (por un .tmp que se renombra).
+ * Si hay una escritura en segundo plano, la espera hasta `wait_us` (si no
+ * termina, no escribe). Se puede llamar desde el gancho de las esperas al
+ * RSX o desde el latido con presentación quieta: nadie más toca el anillo.
+ * Devuelve false si la caja está apagada o algo falló (`err`, si no es
+ * NULL, dice qué). */
+bool cajanegra_write_now(const char *path, uint64_t wait_us, char *err, unsigned err_size);
 
 #endif

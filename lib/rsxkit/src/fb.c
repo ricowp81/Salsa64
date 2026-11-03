@@ -22,7 +22,6 @@
 /* Shaders compilados con cgcomp y embebidos por el Makefile (bin2s). */
 extern const u8 rsxkit_blit_vpo[];
 extern const u8 rsxkit_blit_fpo[];
-extern const u8 rsxkit_blit_argb_fpo[];  /* igual, pero con el alfa de la textura */
 
 #define TEX_ALIGN 128
 
@@ -47,6 +46,10 @@ struct fmt_info {
 			 GCM_TEXTURE_REMAP_COLOR_G, GCM_TEXTURE_REMAP_COLOR_B)
 
 static const struct fmt_info formats[RSXKIT_FORMAT_COUNT] = {
+	[RSXKIT_ARGB8888] = { GCM_TEXTURE_FORMAT_A8R8G8B8, 4,
+	 GCM_TEXTURE_REMAP_MODE(GCM_TEXTURE_REMAP_ORDER_XYXY, GCM_TEXTURE_REMAP_COLOR_A, GCM_TEXTURE_REMAP_COLOR_R,
+	 GCM_TEXTURE_REMAP_COLOR_G, GCM_TEXTURE_REMAP_COLOR_B, GCM_TEXTURE_REMAP_TYPE_REMAP, GCM_TEXTURE_REMAP_TYPE_REMAP,
+	 GCM_TEXTURE_REMAP_TYPE_REMAP, GCM_TEXTURE_REMAP_TYPE_REMAP) },
 	[RSXKIT_RGBA5551] = { GCM_TEXTURE_FORMAT_R5G6B5A1, 2, REMAP_ARGB },
 	[RSXKIT_XRGB1555] = { GCM_TEXTURE_FORMAT_A1R5G5B5, 2, REMAP_ARGB },
 	[RSXKIT_RGB565]   = { GCM_TEXTURE_FORMAT_R5G6B5, 2, REMAP_ARGB },
@@ -90,10 +93,8 @@ void rsxkit_blit_alpha(int on)
 static struct {
 	rsxVertexProgram *vp;
 	rsxFragmentProgram *fp;
-	rsxFragmentProgram *fp_a;
 	void *vp_ucode;
 	u32 fp_offset;
-	u32 fp_a_offset;
 	u32 tex_unit;
 	int ready;
 } prog;
@@ -109,9 +110,6 @@ static int init_programs(void)
 	rsxVertexProgramGetUCode(prog.vp, &prog.vp_ucode, &vp_size);
 	/* El RSX lee el fragment program desde su memoria. */
 	if (!rsxkit_fp_upload(prog.fp, &prog.fp_offset))
-		return RSXKIT_ENOMEM;
-	prog.fp_a = (rsxFragmentProgram *)rsxkit_blit_argb_fpo;
-	if (!rsxkit_fp_upload(prog.fp_a, &prog.fp_a_offset))
 		return RSXKIT_ENOMEM;
 	rsxProgramAttrib *tex = rsxFragmentProgramGetAttrib(prog.fp, "texture");
 	prog.tex_unit = tex ? tex->index : 0;
@@ -294,6 +292,7 @@ void rsxkit_blit_to(uint32_t offset, uint8_t location, uint32_t pitch, uint32_t 
 	gcmContextData *ctx = rsxkit_g.ctx;
 	if (init_programs() != RSXKIT_OK)
 		return;
+	rsxkit_trace_repeat("blit", "%u en total; el último de %u×%u a %u de ancho", 1, tex_w, tex_h, rp->w);
 	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
 	rsxkit_rect r = *rp;
 	const struct fmt_info *fi = &formats[format];
@@ -304,9 +303,10 @@ void rsxkit_blit_to(uint32_t offset, uint8_t location, uint32_t pitch, uint32_t 
 	tex.dimension = GCM_TEXTURE_DIMS_2D;
 	tex.cubemap = GCM_FALSE;
 	tex.remap = fi->remap;
-	/* Hacia un destino con alfa: ARGB8888 y RGBA5551 llevan el suyo. */
-	int use_a = blit_alpha && (format == RSXKIT_XRGB8888 || format == RSXKIT_RGBA5551);
-	if (use_a)
+	/* El fragment program escribe el alfa que trae la textura: 1 con el
+	 * remapeo de la tabla (salvo RSXKIT_ARGB8888) y el suyo hacia un destino
+	 * con alfa (rsxkit_blit_alpha), donde XRGB8888 y RGBA5551 llevan el suyo. */
+	if (blit_alpha && (format == RSXKIT_XRGB8888 || format == RSXKIT_RGBA5551))
 		tex.remap = REMAP_ARGB_A;
 	tex.width = tex_w;
 	tex.height = tex_h;
@@ -325,10 +325,7 @@ void rsxkit_blit_to(uint32_t offset, uint8_t location, uint32_t pitch, uint32_t 
 			   GCM_TEXTURE_CLAMP_TO_EDGE, 0, GCM_TEXTURE_ZFUNC_LESS, 0);
 
 	rsxLoadVertexProgram(ctx, prog.vp, prog.vp_ucode);
-	if (use_a)
-		rsxLoadFragmentProgramLocation(ctx, prog.fp_a, prog.fp_a_offset, GCM_LOCATION_RSX);
-	else
-		rsxLoadFragmentProgramLocation(ctx, prog.fp, prog.fp_offset, GCM_LOCATION_RSX);
+	rsxLoadFragmentProgramLocation(ctx, prog.fp, prog.fp_offset, GCM_LOCATION_RSX);
 
 	float x0 = (float)r.x, y0 = (float)r.y, x1 = x0 + r.w, y1 = y0 + r.h;
 	rsxDrawVertexBegin(ctx, GCM_TYPE_TRIANGLE_STRIP);

@@ -16,8 +16,8 @@ PROGRAM := salsa64-perfil
 TITLE   := Salsa64 perfil
 APPID   := SLSA00120
 endif
-SRCS    := main.c audio_out.c audio_sync.c menu.c osd.c osd_fps.c pacer.c padmap.c pausectl.c scale_auto.c replay.c romlist.c ziprom.c savefile.c mempakfile.c transferpakfile.c \
-           cheats.c cuelgue.c intro.c intro_logic.c cover.c download.c dlutil.c netstack.c ra.c ra_core.c i18n.c namematch.c screenshot.c selftest.c selftest_audio.c selftest_gfx.c states.c cajanegra.c \
+SRCS    := main.c audio_out.c audio_sync.c menu.c osd.c osd_fps.c pacer.c padmap.c pausectl.c scale_auto.c replay.c romlist.c ziprom.c rarrom.c sevenziprom.c savefile.c mempakfile.c transferpakfile.c \
+           cheats.c cuelgue.c intro.c intro_logic.c cover.c download.c dlutil.c netstack.c ra.c ra_core.c ra_rules.c i18n.c namematch.c screenshot.c selftest.c selftest_audio.c selftest_gfx.c states.c cajanegra.c \
            version.c perfilado.c perfilado_ps3.c filters/crt_params.c filters/filters.c seda.c seda_calc.c cartucho3d.c cartucho_mesh.c thumbs.c thumbs_calc.c prompts.c
 # Filtros de la presentación (filters/): fragment programs en Cg compilados
 # con cgcomp. Van en fp32: cgcomp pide -fastprecision a Cg, que baja a fp16
@@ -33,7 +33,7 @@ include $(R)/mk/rcheevos.mk
 ICON0   := $(R)/assets/ps3/ICON0.PNG
 PIC1    := $(R)/assets/ps3/PIC1.PNG
 COMMON  := $(RC_FILES) src/platform/ps3/log.c src/platform/ps3/rec_cache.c src/platform/ps3/fastmem.c src/platform/ps3/gfx_spu.c \
-           src/platform/ps3/audio_spu.c src/platform/ps3/jpeg_spu.c src/platform/ps3/rsp_spu.c src/platform/ps3/bgjob.c src/platform/ps3/bgio.c src/rdp/rdp.c src/rdp/targets.c src/rdp/vmatch.c src/rdp/gfxdump.c src/rdp/blackbox.c \
+           src/platform/ps3/audio_spu.c src/platform/ps3/jpeg_spu.c src/platform/ps3/rsp_spu.c src/platform/ps3/bgjob.c src/platform/ps3/bgio.c src/rdp/rdp.c src/rdp/layer8.c src/rdp/mask32.c src/rdp/targets.c src/rdp/vmatch.c src/rdp/gfxdump.c src/rdp/blackbox.c \
            $(patsubst $(R)/%,%,$(wildcard $(R)/src/core/*.c $(R)/src/cpu/*.c $(R)/src/rsp/gfx/*.c $(R)/src/rsp/audio/*.c $(R)/src/rsp/jpeg/*.c \
                                           $(R)/src/rsp/lle/*.c))
 DATA    := vitest_rom gfxtest_rom audiotest_rom cart_icon cart_mesh cart_plastic cart_label prompts icon_logo
@@ -103,12 +103,25 @@ gfx3_STACK_ARGS := --edge gfx_dl_f3d:f5_command $(GFX_STACK_LIBC)
 gfx4_STACK_ARGS := $(GFX_STACK_LIBC)
 gfx5_STACK_ARGS := --ignore gfx_dl_f3d --edge gfx_dl_f3dex2:acclaim_command $(GFX_STACK_LIBC)
 ZLIB_PREFIX ?= $(PS3DEV)/portlibs/ppu
-CFLAGS  := -I$(ZLIB_PREFIX)/include -ffp-contract=off -fno-math-errno $(RC_DEFS) $(RC_INC)
-LIBS    := -lrsx -lgcm_sys -laudio -lio -lfontFT -lfont -lsysutil -lhttp -lhttputil -lssl -lnetctl -lnet -lsysmodule -lrt -llv2 -lm -lz
+ARCHIVE_7Z_DIR := $(R)/third_party/libun7zip
+ARCHIVE_RAR_DIR := $(R)/third_party/libunrar-ps3
+ARCHIVE_LIBS := $(ARCHIVE_7Z_DIR)/libun7zip.a $(ARCHIVE_RAR_DIR)/libunrar.a
+CFLAGS  := -I$(ZLIB_PREFIX)/include -I$(ARCHIVE_7Z_DIR)/include -I$(ARCHIVE_RAR_DIR)/include -ffp-contract=off -fno-math-errno $(RC_DEFS) $(RC_INC)
+LIBS    := -lrsx -lgcm_sys -laudio -lio -lfontFT -lfont -lsysutil -lhttp -lhttputil -lssl -lnetctl -lnet -lsysmodule -lrt -llv2 -lstdc++ -lm -lz
 # Caché del recompilador al final del segmento de texto (docs/rec-ppe.md).
 LDFLAGS := -L$(ZLIB_PREFIX)/lib -T $(abspath $(R))/mk/rec-cache.ld -T lv2.ld
 
 include $(R)/mk/ps3.mk
+
+# Bibliotecas estáticas de los submódulos fijados en .gitmodules.
+.PHONY: archive-libs
+archive-libs:
+	$(MAKE) --no-print-directory -C $(ARCHIVE_7Z_DIR) PSL1GHT="$(PSL1GHT)" PORTLIBS="$(ZLIB_PREFIX)"
+	$(MAKE) --no-print-directory -C $(ARCHIVE_RAR_DIR) PSL1GHT="$(PSL1GHT)" PORTLIBS="$(ZLIB_PREFIX)"
+
+$(ARCHIVE_LIBS): | archive-libs
+$(OBJ)/$(PROGRAM).raw.elf: $(ARCHIVE_LIBS)
+
 
 # Versión, título y APPID para version.c (menú, pausa y primera línea del
 # log). tools/build.sh calcula SALSA64_VERSION y SALSA64_COMMIT fuera del
@@ -195,9 +208,18 @@ $(OBJ)/spu-gfx1/src/rsp/gfx/tmem.c.o $(call GFX_PHASE_OBJ,tmem.c.o): SPU_CFLAGS 
 # al juntar F3DFLX con el S2DEX de las salas de Zelda (la holgura bajaba a
 # 1328); identificar texturas cuesta 0,01–0,02 ms más por tarea.
 $(call GFX_ALL_OBJ,texcache.c.o): SPU_CFLAGS += -Os
+# La envoltura del SPE 0 (src/spu/gfx/main.c) sin sacar invariantes de los
+# bucles: del de spukit_run (una vuelta por trabajo) GCC sacaba constantes a
+# 44 registros que main guarda en la pila, 736 bytes de marco debajo de toda
+# tarea gráfica; así son 224 (192 en la fase 8, con -Os) y el código, 224
+# bytes menos. Cuesta unas pocas constantes más que cargar por trabajo, no
+# por comando.
+GFX_MAIN_OBJ := $(foreach i,$(GFX_IMAGES),$(OBJ)/spu-gfx$(i)/src/spu/gfx/main.c.o) \
+                $(foreach p,$(GFX_PHASES),$(OBJ)/spu-gfx1fase$(p)/src/spu/gfx/main.c.o)
+$(GFX_MAIN_OBJ): SPU_CFLAGS += -fno-move-loop-invariants -fno-tree-loop-im
 # make no ve un cambio de banderas: que se recompilen si cambia este archivo.
 $(call GFX_ALL_OBJ,combine.c.o) $(call GFX_ALL_OBJ,s2dex.c.o) $(OBJ)/spu-gfx0/src/rsp/gfx/f3d.c.o $(call GFX_ALL_OBJ,f3dpd.c.o) \
 $(call GFX_ALL_OBJ,f3ddkr.c.o) $(call GFX_ALL_OBJ,f5rogue.c.o) $(call GFX_ALL_OBJ,f5indy.c.o) $(call GFX_ALL_OBJ,vgroup.c.o) $(call GFX_ALL_OBJ,flx.c.o) \
 $(call GFX_ALL_OBJ,dl.c.o) $(call GFX_ALL_OBJ,f3dex2.c.o) $(call GFX_ALL_OBJ,f3dex2acclaim.c.o) $(call GFX_ALL_OBJ,texcache.c.o): Makefile
 $(OBJ)/spu-gfx1/src/rsp/gfx/tmem.c.o $(call GFX_PHASE_OBJ,tmem.c.o): Makefile
-$(OBJ)/spu-gfx1fase8/src/spu/gfx/main.c.o: Makefile
+$(OBJ)/spu-gfx1fase8/src/spu/gfx/main.c.o $(GFX_MAIN_OBJ): Makefile

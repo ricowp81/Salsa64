@@ -10,6 +10,35 @@
 
 #include "frontend/ziprom.h"
 
+/* Inyecta falta de memoria en la misma implementación, sin alterar el
+ * asignador de las demás pruebas ni el de las ROMs sintéticas. */
+static unsigned zip_fail_stage;
+static void *zip_test_malloc(size_t n)
+{
+	return zip_fail_stage == 1 ? NULL : malloc(n);
+}
+static int zip_test_inflate_init(z_streamp zs, int bits, const char *version, int size)
+{
+	return zip_fail_stage == 2 ? Z_MEM_ERROR : inflateInit2_(zs, bits, version, size);
+}
+static int zip_test_inflate(z_streamp zs, int flush)
+{
+	return zip_fail_stage == 3 ? Z_MEM_ERROR : inflate(zs, flush);
+}
+#define malloc zip_test_malloc
+#define inflateInit2_ zip_test_inflate_init
+#define inflate zip_test_inflate
+#define salsa64_ziprom_is_path zip_test_is_path
+#define salsa64_ziprom_read_header zip_test_read_header
+#define salsa64_ziprom_extract zip_test_extract
+#include "frontend/ziprom.c"
+#undef salsa64_ziprom_extract
+#undef salsa64_ziprom_read_header
+#undef salsa64_ziprom_is_path
+#undef inflate
+#undef inflateInit2_
+#undef malloc
+
 #define TEST_ROM_SIZE 4096u
 
 static uint8_t test_rom[TEST_ROM_SIZE];
@@ -215,8 +244,30 @@ static void ziprom_path_extensions(void)
 	CHECK(!salsa64_ziprom_is_path(NULL));
 }
 
+static void ziprom_memory_errors(void)
+{
+	char path[64];
+	uint8_t actual[TEST_ROM_SIZE], header[SALSA64_ROM_HEADER_SIZE];
+	uint32_t size;
+	init_test_rom();
+	CHECK(write_test_zip("memory.z64", 8, 0, false, path));
+	for (zip_fail_stage = 1; zip_fail_stage <= 3; zip_fail_stage++) {
+		CHECK_EQ(zip_test_read_header(path, header, &size, NULL, 0), SALSA64_ZIPROM_NOMEM);
+		CHECK_EQ(zip_test_extract(path, actual, sizeof actual, &size, NULL, 0), SALSA64_ZIPROM_NOMEM);
+	}
+	zip_fail_stage = 0;
+	CHECK_EQ(zip_test_extract(path, actual, sizeof actual, &size, NULL, 0), 0);
+	unlink(path);
+	/* Un error de archivo posterior no conserva el error de memoria. */
+	CHECK_EQ(zip_test_read_header(path, header, &size, NULL, 0), -1);
+	CHECK(write_test_zip("crc.z64", 8, 0, true, path));
+	CHECK_EQ(zip_test_extract(path, actual, sizeof actual, &size, NULL, 0), -1);
+	unlink(path);
+}
+
 void t_ziprom_suite(void)
 {
+	RUN(ziprom_memory_errors);
 	RUN(ziprom_stored_roundtrip);
 	RUN(ziprom_deflate_roundtrip);
 	RUN(ziprom_bad_crc_rejected);

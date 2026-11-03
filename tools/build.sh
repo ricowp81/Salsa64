@@ -12,6 +12,11 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 	exit 1
 fi
 
+# Inicializa los lectores de RAR/7z en el host antes de montar el árbol en Docker.
+if [ -f "$ROOT/.gitmodules" ]; then
+	git -C "$ROOT" submodule update --init --recursive
+fi
+
 TTY=""
 [ -t 0 ] && [ -t 1 ] && TTY="-t"
 

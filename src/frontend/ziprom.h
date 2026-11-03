@@ -14,11 +14,13 @@
  * verifica el tamaño descomprimido y el CRC-32 antes de arrancar el juego. */
 #define SALSA64_ZIPROM_MAX_SIZE (64u << 20)
 #define SALSA64_ZIPROM_MIN_SIZE 22u
+/* Error distinguible de archivo inválido o fallo de lectura (-1). */
+#define SALSA64_ZIPROM_NOMEM (-2)
 
 bool salsa64_ziprom_is_path(const char *path);
 
 /* Lee solo la cabecera del cartucho para que el explorador de ROMs muestre el
- * título sin reservar ni descomprimir la ROM entera. Devuelve 0 si tiene éxito. */
+ * título sin reservar ni descomprimir la ROM entera. Devuelve 0 si tiene éxito, SALSA64_ZIPROM_NOMEM si falta memoria. */
 int salsa64_ziprom_read_header(const char *path,
                                uint8_t header[SALSA64_ROM_HEADER_SIZE],
                                uint32_t *rom_size,

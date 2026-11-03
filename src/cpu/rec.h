@@ -135,6 +135,7 @@ struct salsa64_rec_stats {
 	uint64_t fm_off;         /* fastmem apagado (TLB que choca con la ventana, tabla de sitios llena) */
 	uint64_t grp_heads;      /* base en caché: grupos compilados */
 	uint64_t grp_members;    /* base en caché: accesos de esos grupos (cabezas incluidas) */
+	uint64_t reclaimed;      /* bloques desprendidos matados para recuperar ids en vez de vaciar (rec_tlb.c) */
 	/* De invalidated, los que mató una escritura del CPU (vr4300_code_check);
 	 * el resto son de DMA, el RDP, los trucos o el frontend. La zona escrita
 	 * que mató bloques, por clase (lo > hi: ninguna), desde que quien lee
@@ -262,6 +263,8 @@ struct salsa64_rec_fmsite {
 #define SALSA64_REC_DBG_NO_SUPER   0x8000u  /* un salto condicional hacia adelante termina el bloque */
 #define SALSA64_REC_DBG_NO_IJUMP   0x10000u /* un salto interno con destino dentro del bloque sale enlazado */
 #define SALSA64_REC_DBG_NO_CU1_CUT 0x20000u /* con CU1 = 0, un bloque con COP1 no se corta: sale en la entrada */
+#define SALSA64_REC_DBG_NO_COPY_FREE 0x100000u /* copias de bytes de los bloques mapeados en reparto lineal de 1 MB sin
+					       * liberar, como hasta 2026-10-28 (rec_tlb.h; jit-copias-viejas) */
 #define SALSA64_REC_OLD(rec, bit)  ((rec)->opts & (SALSA64_REC_OPT_LEGACY | (bit)))
 
 #define SALSA64_REC_JTC_SLOTS 1024

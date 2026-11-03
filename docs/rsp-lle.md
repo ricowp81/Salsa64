@@ -333,6 +333,12 @@ del RSP al terminar). Una tarea que escribe más de 10 tramos (MusyX) pide
 compilar el host con `make -C src/host EXTRA_CFLAGS=-DAUD_MAX_RANGES=64`.
 
 Para el censo de docs/audio-censo.md el host se compila con
+`-DAUD_MAX_RANGES=1024`. **Sin eso, el oráculo da falsos positivos:** con los
+10 tramos del resultado de spukit, una tarea que escribe más de 10 tramos los
+junta por el hueco menor y compara también los huecos, que el CPU del juego
+puede haber escrito mientras la tarea corría (en el motor de libultra con
+reverberación, como Donald Duck: Quack Attack, con ~30 tramos por tarea, salen
+«distintas» 1302 de 1649 tareas que con 1024 tramos son 1 de 3855). Con
 `-DAUD_MAX_RANGES=1024` (el host lleva `-DAUD_DEBUG`: guarda las direcciones
 de los estados de ENVMIXER para no comparar la parte fraccionaria que el
 microcódigo deja sin limpiar) y el oráculo arranca el microcódigo antes de
@@ -350,6 +356,11 @@ Además de las de arriba, la bisección y el banco de pruebas:
   ABI, el primer opcode que difiere. `_STEP=n` (k de n en n), `_FROM=k`
   (empezar en k) y `_NOP=1` (poner a cero los comandos que sobran en vez de
   cortar la lista, para el microcódigo de Zelda, que lee la lista por bloques).
+- `SALSA64_LLE_POKE=dir=valor[,…]` (hex; 16 o 32 bits según los dígitos): en el
+  hijo de la bisección, escribir la RDRAM de los dos lados antes de la tarea:
+  cambiar un comando de la lista, una tabla o un estado y ver qué hace el
+  microcódigo con ello sin volver a correr el juego (así se midió de dónde toma
+  POLEF las muestras previas con A_INIT).
 - `SALSA64_LLE_SHOWK=k:dir:bytes` y `SALSA64_LLE_SHOWR=k:dir:bytes`: en el hijo
   de k comandos, la DMEM (con la memoria de trabajo del MP3 en 0x800–0xFFF) o
   la RDRAM de los dos lados; `SALSA64_LLE_DUMP_RANGE=dir:bytes` (con DUMP_TASK)

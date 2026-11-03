@@ -608,6 +608,7 @@ void salsa64_cpu_init(struct salsa64_cpu *cpu, struct salsa64_bus *bus, struct s
 	cpu->rdram = bus->rdram;
 	cpu->rdram_size = bus->rdram_size;
 	bus->cpu = cpu;
+	cpu->dcache_sweep_cycles = SALSA64_DCACHE_SWEEP_CYCLES;
 	salsa64_sched_handler(sched, SALSA64_EV_COMPARE, compare_event, cpu);
 	salsa64_cpu_reset(cpu);
 }

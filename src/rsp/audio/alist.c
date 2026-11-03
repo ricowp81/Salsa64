@@ -397,6 +397,8 @@ static void envmix_lanes(struct aud_state *st, bool linear, int32_t up, bool pha
 	salsa64_wr16(s + 0x4C, (uint16_t)dry);
 	salsa64_wr16(s + 0x4E, (uint16_t)wet);
 	aud_store(st, address, s, sizeof s);
+	if (st->scratch)  /* el microcódigo de ABI1 arma el estado en su zona de la DMEM y de ahí lo guarda */
+		memcpy(aud_dm(st, st->scratch), s, sizeof s);
 #ifdef AUD_DEBUG
 	if (aud_dbg_env_n < AUD_DBG_ENV_MAX)
 		aud_dbg_env[aud_dbg_env_n++] = address & 0xFFFFFF;
@@ -592,6 +594,11 @@ void alist_resample(struct aud_state *st, bool init, uint16_t dmemo, uint16_t dm
 		state[k] = aud_sample(st, ipos + k);
 	state[4] = (int16_t)accu;
 	aud_store_s16(st, address, state, 5);
+	if (st->scratch) {  /* ABI1: el estado queda también en la zona de estados de la DMEM */
+		uint8_t *d = aud_dm(st, st->scratch);
+		for (unsigned k = 0; k < 5; k++)
+			aud_st16(d + 2 * k, state[k]);
+	}
 }
 
 void alist_resample_zoh(struct aud_state *st, uint16_t dmemo, uint16_t dmemi, uint16_t count,
@@ -742,7 +749,17 @@ void alist_filter(struct aud_state *st, bool init, uint16_t dmem, uint16_t count
 }
 
 /* POLEF: filtro de dos polos por bloques de 8 (coeficientes en `table`).
- * Estado en la RDRAM: las 4 últimas muestras; se releen la 3.ª y la 4.ª. */
+ * Estado en la RDRAM: las 4 últimas muestras; se releen la 3.ª y la 4.ª.
+ *
+ * Con A_INIT, el microcódigo de ABI1 (las tres compilaciones) no pone a cero
+ * las dos muestras previas: pone a cero los 4 primeros bytes de su zona de
+ * estados de la DMEM (st->scratch, 0xF90) y toma l1 y l2 de los bytes +4 y
+ * +6, que son lo que dejó ahí el último RESAMPLE (sus muestras 3.ª y 4.ª) o
+ * ENVMIXER (los carriles 2 y 3 del volumen izquierdo). Medido con el
+ * microcódigo real en Donald Duck: Quack Attack (la única tarea distinta de
+ * 3855) y en la primera tarea de Diddy Kong Racing, donde la DMEM recién
+ * encendida vale 0xFFFF y el filtro arrastra −1 (el >> 14 redondea hacia
+ * abajo) durante toda la tarea; mupen64plus-rsp-hle parte de cero. */
 void alist_polef(struct aud_state *st, bool init, uint16_t dmemo, uint16_t dmemi, uint16_t count,
 		 uint16_t gain, int16_t *table, uint32_t address)
 {
@@ -759,7 +776,12 @@ void alist_polef(struct aud_state *st, bool init, uint16_t dmemo, uint16_t dmemi
 		aud_load_s16(st, s, address, 4);
 		l1 = s[2];
 		l2 = s[3];
+	} else if (st->scratch) {
+		l1 = aud_ld16(aud_dm(st, st->scratch + 4));
+		l2 = aud_ld16(aud_dm(st, st->scratch + 6));
 	}
+	if (st->scratch)
+		memset(aud_dm(st, st->scratch), 0, 4);
 	for (unsigned i = 0; i < 8; i++) {
 		h2_before[i] = h2[i];
 		h2[i] = (int16_t)(((int32_t)h2[i] * gain) >> 14);
