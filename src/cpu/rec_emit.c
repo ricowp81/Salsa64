@@ -1557,7 +1557,7 @@ static void emit_store(struct ctx *c, unsigned k, unsigned kind, unsigned from)
 	static const uint8_t align[] = { 0, 1, 3, 7 };
 	uint32_t i = c->d[k].w;
 	unsigned rt = I_RT(i), v = T_S1, fv = 0;
-	int slow = new_label(c), resume = new_label(c);
+	int slow = c->rec->cpu->rdram_write_marks ? -1 : new_label(c), resume = new_label(c);
 
 	/* SWC1/SDC1 de un valor residente: directo del registro de la FPU a la
 	 * RDRAM (rec_emit_fpu.h); el camino lento lo lee de casa. */
@@ -1571,6 +1571,30 @@ static void emit_store(struct ctx *c, unsigned k, unsigned kind, unsigned from)
 		E(c, ppc_ld(T_S1, fpr64_off(c, rt), R_CPU));
 	} else {
 		v = get(c, rt, T_S1);
+	}
+	/* FBWrite records an address even when the CPU rewrites the same pixel
+	 * value. Route this title's stores through the helper that marks it. */
+	if (c->rec->cpu->rdram_write_marks) {
+		unsigned base = get(c, I_RS(i), T_ADDR);
+		if ((int16_t)i || base != T_ADDR)
+			E(c, ppc_addi(T_ADDR, base, (int16_t)i));
+		if (fv)
+			E(c, from == DST_FPR64 ? ppc_ld(5, fpr64_off(c, rt), R_CPU) : ppc_lwz(5, fpr32_off(c, rt), R_CPU));
+		else if (v != 5)
+			E(c, ppc_mr(5, v));
+		if (c->wide) {
+			store_regs(c, c->written_start);
+			li64(c, 7, c->pc);
+			li32u(c, 6, slow_arg(c, SLOW_STORE, kind, k) | (uint32_t)c->n << 16);
+			emit_b(c, abs_label(c, c->rec->slow_rtn), true);
+		} else {
+			emit_slow_call(c, SLOW_STORE, kind, k);
+		}
+		emit_bc(c, PPC_BO_FALSE_UNLIKELY, PPC_BI(1, PPC_EQ), exit_label(c, k, false, false));
+		emit_bc(c, PPC_BO_TRUE_UNLIKELY, PPC_BI(5, PPC_GT), exit_label(c, k, true, false));
+		emit_b(c, resume, false);
+		bind(c, resume);
+		return;
 	}
 	const struct grp *g = &c->grp[k];
 	if (g->head != GRP_NONE) {

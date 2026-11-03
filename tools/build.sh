@@ -23,8 +23,8 @@ TTY=""
 # Versión del árbol para el frontend (src/frontend/version.h). Se calcula
 # aquí: en el contenedor, el .git de un worktree apunta a una ruta del host
 # que no está montada. Sin git queda vacía y el frontend dice «desconocida».
-VERSION="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || true)"
-COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+VERSION="${SALSA64_VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || true)}"
+COMMIT="${SALSA64_COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)}"
 
 run() {
 	docker run --rm -i $TTY --user "$(id -u):$(id -g)" -e HOME=/tmp \

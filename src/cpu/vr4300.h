@@ -163,6 +163,8 @@ struct salsa64_cpu {
 	/* Leídos en cada instrucción; solo cambian en caminos lentos. */
 	uint8_t *rdram;        /* copia de bus->rdram para el camino rápido */
 	uint32_t rdram_size;
+	/* Optional per-pixel CPU FBWrite map (Dr. Mario 64 profile only). */
+	uint32_t *rdram_write_marks;
 	/* Estos cuatro bytes van juntos y alineados: el código del recompilador
 	 * los lee con una sola carga después de llamar a C (rec.c) y sale del
 	 * bloque si alguno no es 0. */
