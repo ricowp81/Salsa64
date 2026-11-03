@@ -1,0 +1,6 @@
+[submodule "third_party/libun7zip"]
+	path = third_party/libun7zip
+	url = https://github.com/kadorna1/libun7zip.git
+[submodule "third_party/libunrar-ps3"]
+	path = third_party/libunrar-ps3
+	url = https://github.com/kadorna1/libunrar-ps3.git

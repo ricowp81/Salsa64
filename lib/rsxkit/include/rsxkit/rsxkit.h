@@ -718,6 +718,17 @@ int rsxkit_target_copy(rsxkit_target *dst, const rsxkit_target *src);
  * dibujó encima sin subir la imagen entera. */
 int rsxkit_target_fill_rows(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t w, uint32_t h,
 			    uint32_t y0, uint32_t y1, rsxkit_format format);
+/* Replace a rectangular region of a target from a packed source image. The
+ * destination rectangle uses physical target pixels; source dimensions and
+ * pitch describe the main-memory image. */
+int rsxkit_target_fill_rect(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t src_w,
+			    uint32_t src_h, uint32_t dst_x, uint32_t dst_y, uint32_t dst_w, uint32_t dst_h,
+			    rsxkit_format format);
+/* Replace a rectangle without alpha blending (for clearing previously covered
+ * CPU-written pixels whose RGBA5551 coverage bit has just become zero). */
+int rsxkit_target_replace_rect(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t src_w,
+			       uint32_t src_h, uint32_t dst_x, uint32_t dst_y, uint32_t dst_w, uint32_t dst_h,
+			       rsxkit_format format);
 int rsxkit_target_fill(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t w, uint32_t h,
 		       rsxkit_format format);
 

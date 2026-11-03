@@ -207,6 +207,9 @@
 #include "cuelgue.h"
 #include "romlist.h"
 #include "ziprom.h"
+#include "archiverom.h"
+#include "rarrom.h"
+#include "sevenziprom.h"
 #include "savefile.h"
 #include "scale_auto.h"
 #include "mempakfile.h"
@@ -1650,6 +1653,35 @@ static uint8_t *rom_open_paged(FILE *f, const char *path, uint32_t len, bool for
 static uint8_t *read_rom_file(const char *path, uint8_t *buf, uint32_t cap, uint32_t *size)
 {
 	rom_no_memory = false;
+	if (salsa64_rarrom_is_path(path) || salsa64_7zrom_is_path(path)) {
+		uint8_t header[SALSA64_ROM_HEADER_SIZE];
+		uint32_t rom_len = 0, actual_len = 0;
+		uint32_t limit = buf ? cap : ROM_MAX;
+		int rc = salsa64_rarrom_is_path(path)
+			? salsa64_rarrom_read_header(path, header, &rom_len)
+			: salsa64_7zrom_read_header(path, header, &rom_len);
+		if (rc != 0 || rom_len < SALSA64_ARCHIVEROM_MIN_ROM_SIZE ||
+		    rom_len > limit || rom_len > SALSA64_ARCHIVEROM_MAX_SIZE) {
+			rom_no_memory = rc == SALSA64_ARCHIVEROM_NOMEM;
+			return NULL;
+		}
+		uint8_t *dst = buf ? buf : rom_alloc(rom_len);
+		if (!dst)
+			return NULL;
+		uint32_t dst_cap = buf ? cap : rom_len;
+		rc = salsa64_rarrom_is_path(path)
+			? salsa64_rarrom_extract(path, dst, dst_cap, &actual_len)
+			: salsa64_7zrom_extract(path, dst, dst_cap, &actual_len);
+		if (rc != 0 || actual_len != rom_len) {
+			rom_no_memory = rc == SALSA64_ARCHIVEROM_NOMEM;
+			if (!buf)
+				rom_free(dst);
+			return NULL;
+		}
+		*size = actual_len;
+		return dst;
+	}
+
 	/* ZIP: se inspecciona la entrada elegida antes de reservar memoria, para que
 	 * el archivo no necesite un segundo búfer grande. La extracción completa
 	 * verifica el flujo Deflate, el tamaño descomprimido y el CRC-32 antes de
@@ -5907,6 +5939,30 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 	char title[21];
 	memcpy(title, rom + 0x20, 20);
 	title[20] = '\0';
+	/* GLideN64's equivalent per-game setting is EnableCopyColorFromRDRAM:
+	 * Dr. Mario 64 needs CPU-updated pixels uploaded into a reused color
+	 * image. Normalize punctuation/spaces so regional title variants match. */
+	char title_compact[21];
+	size_t title_compact_len = 0;
+	for (unsigned k = 0; k < 20 && title[k]; k++) {
+		unsigned char ch = (unsigned char)title[k];
+		if (ch >= 'a' && ch <= 'z')
+			ch = (unsigned char)(ch - 'a' + 'A');
+		if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
+			title_compact[title_compact_len++] = (char)ch;
+	}
+	title_compact[title_compact_len] = '\0';
+	bool dr_mario64 = strstr(title_compact, "DRMARIO64") != NULL;
+	salsa64_rdp_copy_color_from_rdram(dr_mario64);
+	n64.cpu.rdram_write_marks = salsa64_rdp_write_marks();
+	if (dr_mario64)
+		salsa64_log("compatibilidad: FBWrite por píxel %s",
+			    n64.cpu.rdram_write_marks ? "activo" : "sin memoria; se conserva la detección por cambios");
+	/* Avoid stale main-framebuffer RSX→RDRAM copy-back for this game, while
+	 * retaining the other framebuffer effects. */
+	salsa64_rdp_copy_color_to_rdram(!dr_mario64);
+	if (dr_mario64)
+		salsa64_log("compatibilidad: Dr. Mario 64 CopyColorFromRDRAM activo; espejo automático del framebuffer principal desactivado");
 	salsa64_log("ROM %s \"%s\", %u bytes, %s, entrada 0x%08X, TV %s", source, title, rom_size,
 		    boot_info.kind == SALSA64_BOOT_ELF ? "ELF (IPL3 libre)" : "carga plana", boot_info.entry,
 		    boot_info.tv == SALSA64_TV_PAL ? "PAL" : boot_info.tv == SALSA64_TV_MPAL ? "MPAL" : "NTSC");
@@ -6015,6 +6071,10 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 	}
 
 	rec.opts = SALSA64_REC_OPT_PIN;  /* +7 % en nemu64-test (docs/perf-log.md) */
+	if (n64.cpu.rdram_write_marks) {
+		rec.opts |= SALSA64_REC_OPT_NO_GROUP;
+		salsa64_log("recompilador: escrituras CPU con FBWrite pasan por el camino de tienda trazada (sin grupos)");
+	}
 	if (file_exists(SALSA64_DATA_DIR "/jit-diag")) {
 		rec.opts |= SALSA64_REC_OPT_DIAG;
 		salsa64_log("recompilador: diagnóstico de huellas activo (jit-diag)");
@@ -6128,6 +6188,15 @@ static enum game_end run_game_once(uint8_t *rom, uint32_t rom_size, const char *
 			if (fscanf(ff, "%d", &fbfx) != 1)
 				fbfx = 2;
 			fclose(ff);
+		}
+		/* GLideN64's Dr. Mario profile enables CopyColorFromRDRAM but
+		 * disables auxiliary RSX->RDRAM readbacks. Here fbfx=2 schedules
+		 * those readbacks and marks reusable framebuffer targets CPU-owned,
+		 * defeating the live render-to-texture path. Force texture rendering
+		 * only for this title; leave the user's setting untouched otherwise. */
+		if (dr_mario64 && fbfx != 1) {
+			fbfx = 1;
+			salsa64_log("compatibilidad: Dr. Mario 64 desactiva copias auxiliares RSX->RDRAM; mantiene render a textura y CopyColorFromRDRAM");
 		}
 		salsa64_rdp_fbfx(fbfx);
 		salsa64_log("efectos de framebuffer: %s", fbfx <= 0 ? "apagados" : fbfx == 1 ? "render a textura" :

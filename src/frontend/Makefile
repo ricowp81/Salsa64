@@ -16,7 +16,7 @@ PROGRAM := salsa64-perfil
 TITLE   := Salsa64 perfil
 APPID   := SLSA00120
 endif
-SRCS    := main.c audio_out.c audio_sync.c menu.c osd.c osd_fps.c pacer.c padmap.c pausectl.c scale_auto.c replay.c romlist.c ziprom.c savefile.c mempakfile.c transferpakfile.c \
+SRCS    := main.c audio_out.c audio_sync.c menu.c osd.c osd_fps.c pacer.c padmap.c pausectl.c scale_auto.c replay.c romlist.c ziprom.c rarrom.c sevenziprom.c savefile.c mempakfile.c transferpakfile.c \
            cheats.c cuelgue.c intro.c intro_logic.c cover.c download.c dlutil.c netstack.c ra.c ra_core.c ra_rules.c i18n.c namematch.c screenshot.c selftest.c selftest_audio.c selftest_gfx.c states.c cajanegra.c \
            version.c perfilado.c perfilado_ps3.c filters/crt_params.c filters/filters.c seda.c seda_calc.c cartucho3d.c cartucho_mesh.c thumbs.c thumbs_calc.c prompts.c
 # Filtros de la presentación (filters/): fragment programs en Cg compilados
@@ -103,12 +103,25 @@ gfx3_STACK_ARGS := --edge gfx_dl_f3d:f5_command $(GFX_STACK_LIBC)
 gfx4_STACK_ARGS := $(GFX_STACK_LIBC)
 gfx5_STACK_ARGS := --ignore gfx_dl_f3d --edge gfx_dl_f3dex2:acclaim_command $(GFX_STACK_LIBC)
 ZLIB_PREFIX ?= $(PS3DEV)/portlibs/ppu
-CFLAGS  := -I$(ZLIB_PREFIX)/include -ffp-contract=off -fno-math-errno $(RC_DEFS) $(RC_INC)
-LIBS    := -lrsx -lgcm_sys -laudio -lio -lfontFT -lfont -lsysutil -lhttp -lhttputil -lssl -lnetctl -lnet -lsysmodule -lrt -llv2 -lm -lz
+ARCHIVE_7Z_DIR := $(R)/third_party/libun7zip
+ARCHIVE_RAR_DIR := $(R)/third_party/libunrar-ps3
+ARCHIVE_LIBS := $(ARCHIVE_7Z_DIR)/libun7zip.a $(ARCHIVE_RAR_DIR)/libunrar.a
+CFLAGS  := -I$(ZLIB_PREFIX)/include -I$(ARCHIVE_7Z_DIR)/include -I$(ARCHIVE_RAR_DIR)/include -ffp-contract=off -fno-math-errno $(RC_DEFS) $(RC_INC)
+LIBS    := -lrsx -lgcm_sys -laudio -lio -lfontFT -lfont -lsysutil -lhttp -lhttputil -lssl -lnetctl -lnet -lsysmodule -lrt -llv2 -lstdc++ -lm -lz
 # Caché del recompilador al final del segmento de texto (docs/rec-ppe.md).
 LDFLAGS := -L$(ZLIB_PREFIX)/lib -T $(abspath $(R))/mk/rec-cache.ld -T lv2.ld
 
 include $(R)/mk/ps3.mk
+
+# Bibliotecas estáticas de los submódulos fijados en .gitmodules.
+.PHONY: archive-libs
+archive-libs:
+	$(MAKE) --no-print-directory -C $(ARCHIVE_7Z_DIR) PSL1GHT="$(PSL1GHT)" PORTLIBS="$(ZLIB_PREFIX)"
+	$(MAKE) --no-print-directory -C $(ARCHIVE_RAR_DIR) PSL1GHT="$(PSL1GHT)" PORTLIBS="$(ZLIB_PREFIX)"
+
+$(ARCHIVE_LIBS): | archive-libs
+$(OBJ)/$(PROGRAM).raw.elf: $(ARCHIVE_LIBS)
+
 
 # Versión, título y APPID para version.c (menú, pausa y primera línea del
 # log). tools/build.sh calcula SALSA64_VERSION y SALSA64_COMMIT fuera del

@@ -323,6 +323,28 @@ enum rdp_texsrc rdp_targets_texture(struct rdp_targets *s, uint32_t addr, uint32
 	return RDP_TEXSRC_RSX;
 }
 
+/* The caller reconciled changed RDRAM spans into a live surface. allow_stale
+ * is for a compatibility profile whose RDRAM copy is incomplete; never use a
+ * CPU-owned target even when stale sampling is explicitly enabled. */
+enum rdp_texsrc rdp_targets_texture_synced(struct rdp_targets *s, uint32_t addr, uint32_t pitch, uint32_t bpp,
+					   int cur, bool allow_stale, int *slot, uint32_t *x0, uint32_t *y0)
+{
+	int i = rdp_targets_locate(s, addr, pitch, bpp, x0, y0);
+	*slot = i;
+	if (i < 0)
+		return RDP_TEXSRC_NONE;
+	if (s->t[i].cpu_owned || (!allow_stale && s->task - s->t[i].last_task > RDP_TARGETS_FRESH)) {
+		s->tex_rdram++;
+		return RDP_TEXSRC_RDRAM;
+	}
+	if (i == cur) {
+		s->tex_self++;
+		return RDP_TEXSRC_SELF;
+	}
+	s->tex_rsx++;
+	return RDP_TEXSRC_RSX;
+}
+
 bool rdp_targets_readback(struct rdp_targets *s, int slot, bool force, bool cpu_owns)
 {
 	if (slot < 0 || slot >= RDP_TARGETS_MAX || !s->t[slot].used)
@@ -336,6 +358,15 @@ bool rdp_targets_readback(struct rdp_targets *s, int slot, bool force, bool cpu_
 		t->cpu_owned = true;
 	s->readbacks++;
 	return true;
+}
+
+/* CopyColorFromRDRAM has reconciled CPU-owned bytes with the RSX surface.
+ * The surface can again be sampled as a texture, while normal freshness rules
+ * still decide what to do with old targets. */
+void rdp_targets_rdram_uploaded(struct rdp_targets *s, int slot)
+{
+	if (slot >= 0 && slot < RDP_TARGETS_MAX && s->t[slot].used)
+		s->t[slot].cpu_owned = false;
 }
 
 bool rdp_targets_mirror_wanted(const struct rdp_targets *s, int slot)
@@ -438,6 +469,11 @@ bool rdp_vi_ring_covers(const struct rdp_vi_ring *r, uint32_t addr, uint32_t wid
 			return true;
 	}
 	return false;
+}
+
+bool rdp_target_profile_vi_visible(const struct rdp_target *t, const struct rdp_vi_ring *r)
+{
+	return t && t->used && (t->presented || rdp_vi_ring_covers(r, t->addr, t->width));
 }
 
 uint32_t rdp_vi_ring_min_height(const struct rdp_vi_ring *r, uint32_t addr, uint32_t width, uint32_t bpp)
@@ -779,6 +815,7 @@ int rdp_claims_after(const struct rdp_claim_ring *r, uint32_t addr, uint32_t lin
 	return k;
 }
 
+
 uint32_t rdp_guard_hash(const uint8_t *line)
 {
 	/* Suma y o exclusivo rotado de las 16 palabras dobles: cualquier
@@ -814,6 +851,142 @@ void rdp_guard_mark(struct rdp_guard *g, const uint8_t *rdram, uint32_t size, ui
 		return;
 	for (uint32_t l = lo >> RDP_GUARD_SHIFT; l <= (hi - 1) >> RDP_GUARD_SHIFT; l++)
 		g->base[l] = rdp_guard_hash(rdram + (l << RDP_GUARD_SHIFT));
+}
+
+/* Baseline used by CopyColorFromRDRAM. Unlike `base`/`wrote`, this snapshot
+ * is updated only when data is uploaded to a target or our own readback writes
+ * RDRAM. A later task-end guard therefore cannot absorb a CPU change before
+ * the target is reused. */
+void rdp_guard_profile_mark(struct rdp_guard *g, const uint8_t *rdram, uint32_t size, uint32_t lo, uint32_t hi)
+{
+	if (!g || !rdram)
+		return;
+	if (hi > size)
+		hi = size;
+	uint32_t limit = RDP_GUARD_LINES << RDP_GUARD_SHIFT;
+	if (hi > limit)
+		hi = limit;
+	if (lo >= hi)
+		return;
+	for (uint32_t l = lo >> RDP_GUARD_SHIFT; l <= (hi - 1) >> RDP_GUARD_SHIFT; l++)
+		g->profile[l] = rdp_guard_hash(rdram + (l << RDP_GUARD_SHIFT));
+}
+
+/* Do not let a late RSX readback replace a CPU change which predates the
+ * most recent graphics task. The ordinary task-end guard cannot catch that
+ * case because it snapshots the already-modified RDRAM. A zero baseline means
+ * this line has not been uploaded/read back by the profile and remains safe. */
+bool rdp_guard_profile_ok(const struct rdp_guard *g, const uint8_t *rdram, uint32_t line)
+{
+	if (!g || !rdram || line >= RDP_GUARD_LINES)
+		return false;
+	uint32_t baseline = g->profile[line];
+	return !baseline || rdp_guard_hash(rdram + (line << RDP_GUARD_SHIFT)) == baseline;
+}
+
+/* Start a fresh CPU overlay batch when a newer RDP task updates framebuffer
+ * bytes. Retire older covered overlays but retain erase tombstones until the
+ * VI thread applies them; unchanged pixels survive repeated presentations. */
+bool rdp_profile_pending_retire_ready(uint32_t target_task, uint32_t batch, bool batch_valid)
+{
+	return !batch_valid || (int32_t)(target_task - batch) >= 0;
+}
+
+bool rdp_profile_pending_new_batch(uint8_t *pending, uint32_t count, uint32_t *last_batch,
+				   bool *last_batch_valid, uint32_t batch)
+{
+	if (!pending || !count || !last_batch || !last_batch_valid)
+		return false;
+	if (*last_batch_valid && *last_batch == batch)
+		return false;
+	/* A newer task redraws the target underneath all older CPU overlays.
+	 * Retire every old state (including an unapplied transparent erase)
+	 * without writing stale pixels over the new render. Changed pixels in
+	 * this batch are then re-queued as BLEND or REPLACE by pending_note(). */
+	for (uint32_t i = 0; i < count; i++)
+		if (pending[i] != RDP_PROFILE_PENDING_NONE)
+			pending[i] = RDP_PROFILE_PENDING_RETIRE;
+	*last_batch = batch;
+	*last_batch_valid = true;
+	return true;
+}
+
+/* Keep a covered CPU-written pixel over later RDP draws until a newer CPU
+ * overlay batch replaces it or the CPU clears its RGBA5551 coverage bit. A
+ * transparent replacement is consumed once, even before the first replay. */
+uint8_t rdp_profile_pending_note(uint8_t pending, bool was_covered, bool is_covered)
+{
+	if (is_covered)
+		return RDP_PROFILE_PENDING_BLEND;
+	/* RETIRE alone is not evidence that this source pixel was visible.
+	 * A changed but still-uncovered pixel must stay retired: replacing it with
+	 * transparent alpha would punch a hole in the newly rendered RSX image.
+	 * Only a real old covered pixel (or a current covered overlay) needs erase. */
+	if (was_covered || pending == RDP_PROFILE_PENDING_BLEND ||
+	    pending == RDP_PROFILE_PENDING_FOLLOWUP)
+		return RDP_PROFILE_PENDING_REPLACE;
+	return pending;
+}
+
+/* Refresh pending state against the latest stable RDRAM coverage bit. */
+uint8_t rdp_profile_pending_refresh(uint8_t pending, bool is_covered)
+{
+	if (!pending)
+		return RDP_PROFILE_PENDING_NONE;
+	/* A retired overlay waits for per-pixel RDP draw coverage. Until a later
+	 * draw reaches that pixel, retain covered source pixels or schedule a
+	 * transparent replacement when the CPU has cleared coverage. */
+	if (pending == RDP_PROFILE_PENDING_RETIRE)
+		return is_covered ? RDP_PROFILE_PENDING_FOLLOWUP : RDP_PROFILE_PENDING_REPLACE;
+	if (is_covered) {
+		if (pending != RDP_PROFILE_PENDING_FOLLOWUP)
+			return RDP_PROFILE_PENDING_BLEND;
+	} else if (pending == RDP_PROFILE_PENDING_BLEND ||
+		   pending == RDP_PROFILE_PENDING_FOLLOWUP) {
+		return RDP_PROFILE_PENDING_REPLACE;
+	}
+	return pending;
+}
+
+/* Covered overlays persist for the current CPU update batch; a newer batch
+ * replaces stale positions, while coverage clears are one-shot erases. */
+uint8_t rdp_profile_pending_complete(uint8_t mode)
+{
+	/* Each VI buffer is presented independently. Keep covered CPU pixels on
+	 * the RSX surface through every later RDP redraw; refresh() turns the
+	 * marker into a one-shot replacement as soon as RDRAM coverage goes low. */
+	return mode == RDP_PROFILE_PENDING_BLEND || mode == RDP_PROFILE_PENDING_FOLLOWUP
+		? RDP_PROFILE_PENDING_FOLLOWUP : RDP_PROFILE_PENDING_NONE;
+}
+
+/* A CPU-modified row is uploaded only if a previously initialized profile
+ * baseline no longer matches. Guard lines are absolute 128-byte spans, so
+ * unaligned row strides conservatively mark adjacent rows when they overlap
+ * the same line. */
+bool rdp_target_row_cpu_changed(const struct rdp_target *t, uint32_t row, const struct rdp_guard *g,
+				const uint8_t *rdram, uint32_t rdram_size)
+{
+	if (!t || !g || !rdram || !t->used || t->bpp != 2 || !t->width || row >= t->lh)
+		return false;
+	uint64_t row_bytes = (uint64_t)t->width * t->bpp;
+	uint64_t lo64 = (uint64_t)t->addr + (uint64_t)row * row_bytes;
+	uint64_t hi64 = lo64 + row_bytes;
+	if (lo64 >= rdram_size || hi64 <= lo64)
+		return false;
+	if (hi64 > rdram_size)
+		hi64 = rdram_size;
+	uint32_t first = (uint32_t)(lo64 >> RDP_GUARD_SHIFT);
+	uint32_t last = (uint32_t)((hi64 - 1) >> RDP_GUARD_SHIFT);
+	if (first >= RDP_GUARD_LINES)
+		return false;
+	if (last >= RDP_GUARD_LINES)
+		last = RDP_GUARD_LINES - 1;
+	for (uint32_t line = first; line <= last; line++) {
+		uint32_t baseline = g->profile[line];
+		if (baseline && rdp_guard_hash(rdram + (line << RDP_GUARD_SHIFT)) != baseline)
+			return true;
+	}
+	return false;
 }
 
 int rdp_targets_inside(const struct rdp_targets *s, uint32_t addr, uint32_t width, uint32_t bpp, uint32_t rows,

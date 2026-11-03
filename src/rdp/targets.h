@@ -338,6 +338,11 @@ void rdp_targets_task(struct rdp_targets *s);
 enum rdp_texsrc { RDP_TEXSRC_NONE = 0, RDP_TEXSRC_RSX, RDP_TEXSRC_RDRAM, RDP_TEXSRC_SELF };
 enum rdp_texsrc rdp_targets_texture(struct rdp_targets *s, uint32_t addr, uint32_t pitch, uint32_t bpp, int cur,
 				    int *slot, uint32_t *x0, uint32_t *y0);
+/* Like rdp_targets_texture, after CopyColorFromRDRAM synchronized changed
+ * CPU spans into a live RSX-owned surface. Profiles may opt to sample a stale
+ * surface only after reconciliation; CPU-owned surfaces always fall back. */
+enum rdp_texsrc rdp_targets_texture_synced(struct rdp_targets *s, uint32_t addr, uint32_t pitch, uint32_t bpp,
+					   int cur, bool allow_stale, int *slot, uint32_t *x0, uint32_t *y0);
 
 /* Al terminar una tarea que dibujó la ranura: si hay que copiarla a la
  * RDRAM (rdp_readback_wanted con los orígenes del VI de la tabla) devuelve
@@ -350,6 +355,10 @@ enum rdp_texsrc rdp_targets_texture(struct rdp_targets *s, uint32_t addr, uint32
  * o dos tareas después, a la resolución de la N64 y en 16 bits, y la
  * realimentación del efecto acumulaba ese retraso y ese redondeo. */
 bool rdp_targets_readback(struct rdp_targets *s, int slot, bool force, bool cpu_owns);
+/* Clear CPU ownership after CopyColorFromRDRAM has synchronized the RSX
+ * surface with the changed RDRAM spans, so recent texture reads use that
+ * reconciled surface rather than decoding the old backing again. */
+void rdp_targets_rdram_uploaded(struct rdp_targets *s, int slot);
 
 /* Espejo del framebuffer (rdp.c y el rasterizador del host): lo que el RDP
  * dibuja en un framebuffer se copia a la RDRAM para que el CPU lea el
@@ -420,26 +429,47 @@ bool rdp_dma_since(const struct rdp_dma_ring *r, uint32_t lo, uint32_t hi, uint3
  * le pisaba sus datos con el cuadro, que en negro es 0x0001 en RGBA5551: la
  * lista salía llena de 0x00010001 y el CPU saltaba a 0x00010001.
  *
- * Una huella por línea de 128 bytes: `base` la pone el hilo de emulación al
- * terminar cada tarea, en las filas que sus dibujos pueden tocar (la RDRAM
- * aún sin la copia); `wrote`, el hilo de presentación tras escribir una copia
- * en la línea. Una línea se puede copiar si no hay huella (0) o si su
- * contenido es el de una de las dos: si no, algo que no es el RDP (el CPU,
- * casi siempre) la cambió desde que terminó la tarea, y esa línea se salta.
- * Las dos tablas tienen un solo escritor cada una; una carrera entre los dos
- * hilos solo puede saltar una línea de más en una copia. */
+ * Huellas por línea de 128 bytes. `base` la escribe el hilo de emulación
+ * al terminar una tarea; `wrote`, el de presentación después de una copia
+ * tardía. `profile` conserva un baseline independiente para CopyColorFromRDRAM:
+ * las huellas de tareas cambian continuamente y no sirven para recordar una
+ * escritura CPU entre el dibujo y el uso siguiente de la superficie. */
 #define RDP_GUARD_SHIFT 7
 #define RDP_GUARD_LINE  (1u << RDP_GUARD_SHIFT)
 #define RDP_GUARD_LINES ((8u << 20) >> RDP_GUARD_SHIFT)
 struct rdp_guard {
 	uint32_t base[RDP_GUARD_LINES];
 	uint32_t wrote[RDP_GUARD_LINES];
+	uint32_t profile[RDP_GUARD_LINES];
 };
 /* Huella de 128 bytes alineados (nunca 0). */
 uint32_t rdp_guard_hash(const uint8_t *line);
 void rdp_guard_clear(struct rdp_guard *g);
 /* Hilo de emulación: huella de las líneas de [lo, hi) (recortado a `size`). */
 void rdp_guard_mark(struct rdp_guard *g, const uint8_t *rdram, uint32_t size, uint32_t lo, uint32_t hi);
+/* Baseline estable del perfil CopyColorFromRDRAM, independiente de las guardas tardías. */
+void rdp_guard_profile_mark(struct rdp_guard *g, const uint8_t *rdram, uint32_t size, uint32_t lo, uint32_t hi);
+/* ¿Una copia RSX->RDRAM puede escribir esta línea sin pisar datos del CPU? */
+bool rdp_guard_profile_ok(const struct rdp_guard *g, const uint8_t *rdram, uint32_t line);
+
+/* CPU-written overlay lifetime for CopyColorFromRDRAM. */
+enum rdp_profile_pending_mode {
+	RDP_PROFILE_PENDING_NONE = 0,
+	RDP_PROFILE_PENDING_BLEND = 1,
+	RDP_PROFILE_PENDING_REPLACE = 2,
+	RDP_PROFILE_PENDING_FOLLOWUP = 3,
+	/* An applied overlay superseded by a newer RDP task. Retire without
+	 * uploading; REPLACE remains reserved for a CPU-cleared transparent pixel. */
+	RDP_PROFILE_PENDING_RETIRE = 4,
+};
+bool rdp_profile_pending_new_batch(uint8_t *pending, uint32_t count, uint32_t *last_batch,
+				   bool *last_batch_valid, uint32_t batch);
+/* A retired overlay is safe to drop only after its own target was drawn in
+ * the task that superseded the batch. */
+bool rdp_profile_pending_retire_ready(uint32_t target_task, uint32_t batch, bool batch_valid);
+uint8_t rdp_profile_pending_note(uint8_t pending, bool was_covered, bool is_covered);
+uint8_t rdp_profile_pending_refresh(uint8_t pending, bool is_covered);
+uint8_t rdp_profile_pending_complete(uint8_t mode);
 /* ¿Se puede escribir la línea `line` (dirección >> RDP_GUARD_SHIFT)? */
 static inline bool rdp_guard_ok(const struct rdp_guard *g, const uint8_t *rdram, uint32_t line)
 {
@@ -454,6 +484,10 @@ static inline void rdp_guard_wrote(struct rdp_guard *g, const uint8_t *rdram, ui
 {
 	g->wrote[line] = rdp_guard_hash(rdram + (line << RDP_GUARD_SHIFT));
 }
+/* True when any initialized profile-baseline line overlapping this 16-bit
+ * target row has changed since it was last uploaded/read back. */
+bool rdp_target_row_cpu_changed(const struct rdp_target *t, uint32_t row, const struct rdp_guard *g,
+				const uint8_t *rdram, uint32_t rdram_size);
 
 /* Lo que tomó otra color image después (complemento de la guarda).
  *
@@ -540,6 +574,9 @@ bool rdp_readback_wanted(const struct rdp_vi_ring *r, uint32_t addr, uint32_t wi
 /* ¿La color image (addr, width) está dentro de alguno de los framebuffers
  * recientes del VI? Las que no lo están son imágenes auxiliares. */
 bool rdp_vi_ring_covers(const struct rdp_vi_ring *r, uint32_t addr, uint32_t width);
+/* Only visible/recent VI buffers consume CPU FBWrite events; auxiliary targets
+ * retain the byte-difference path and cannot stay permanently dirty. */
+bool rdp_target_profile_vi_visible(const struct rdp_target *t, const struct rdp_vi_ring *r);
 /* Alto mínimo de la color image (addr, width, bpp) que cubre una ventana
  * VI reciente. 0 si no hay una compatible. */
 uint32_t rdp_vi_ring_min_height(const struct rdp_vi_ring *r, uint32_t addr, uint32_t width, uint32_t bpp);

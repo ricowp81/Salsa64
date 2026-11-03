@@ -13,6 +13,9 @@
 
 #include "core/rom.h"
 #include "ziprom.h"
+#include "archiverom.h"
+#include "rarrom.h"
+#include "sevenziprom.h"
 #include "core/save.h"
 
 #define HDR_TITLE   0x20
@@ -71,7 +74,8 @@ static int casecmp(const char *a, const char *b)
 
 bool romlist_has_rom_ext(const char *name)
 {
-	if (salsa64_ziprom_is_path(name))
+	if (salsa64_ziprom_is_path(name) || salsa64_rarrom_is_path(name) ||
+	    salsa64_7zrom_is_path(name))
 		return true;
 	size_t n = strlen(name);
 	if (n < 5 || name[n - 4] != '.')
@@ -395,6 +399,20 @@ static bool add_rom_raw(struct romlist *l, const char *name, unsigned source, ui
 
 static bool read_header(const char *path, uint32_t size, uint8_t raw[SALSA64_ROM_HEADER_SIZE])
 {
+	if (salsa64_rarrom_is_path(path)) {
+		uint32_t rom_size = 0;
+		return size >= 7u &&
+		       salsa64_rarrom_read_header(path, raw, &rom_size) == 0 &&
+		       rom_size >= ROMLIST_MIN_SIZE &&
+		       rom_size <= SALSA64_ARCHIVEROM_MAX_SIZE;
+	}
+	if (salsa64_7zrom_is_path(path)) {
+		uint32_t rom_size = 0;
+		return size >= 32u &&
+		       salsa64_7zrom_read_header(path, raw, &rom_size) == 0 &&
+		       rom_size >= ROMLIST_MIN_SIZE &&
+		       rom_size <= SALSA64_ARCHIVEROM_MAX_SIZE;
+	}
 	if (salsa64_ziprom_is_path(path)) {
 		uint32_t rom_size = 0;
 		return size >= SALSA64_ZIPROM_MIN_SIZE &&
@@ -458,8 +476,11 @@ static bool add_file_size(struct romlist *l, const char *path, unsigned source, 
 bool romlist_add_file(struct romlist *l, const char *path, unsigned source, const char *save_cfg, size_t save_cfg_len)
 {
 	struct stat st;
+	uint32_t min_size = salsa64_ziprom_is_path(path) ? SALSA64_ZIPROM_MIN_SIZE :
+		salsa64_rarrom_is_path(path) ? 7u :
+		salsa64_7zrom_is_path(path) ? 32u : ROMLIST_MIN_SIZE;
 	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) ||
-	    st.st_size < (off_t)(salsa64_ziprom_is_path(path) ? SALSA64_ZIPROM_MIN_SIZE : ROMLIST_MIN_SIZE) ||
+	    st.st_size < (off_t)min_size ||
 	    (uint64_t)st.st_size > 0xFFFFFFFFull) {
 		l->skipped++;
 		return false;

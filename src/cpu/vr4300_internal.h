@@ -13,6 +13,7 @@
 
 #include "core/bus.h"
 #include "core/endian.h"
+#include "core/write_marks.h"
 #include "cpu/vr4300.h"
 
 #define I_OP(i)     ((i) >> 26)
@@ -178,6 +179,8 @@ static inline void vr4300_write8(struct salsa64_cpu *cpu, uint32_t pa, uint64_t 
 	VR4300_WATCH(pa, 1);
 	if (SALSA64_LIKELY(pa < cpu->rdram_size)) {
 		salsa64_wr8(cpu->rdram + pa, (uint8_t)v);
+		if (cpu->rdram_write_marks)
+			salsa64_write_marks_mark_range(cpu->rdram_write_marks, cpu->rdram_size, pa, 1);
 		vr4300_code_check(cpu, pa, 1);
 		return;
 	}
@@ -190,6 +193,8 @@ static inline void vr4300_write16(struct salsa64_cpu *cpu, uint32_t pa, uint64_t
 	VR4300_WATCH(pa, 1);
 	if (SALSA64_LIKELY(pa < cpu->rdram_size)) {
 		salsa64_wr16(cpu->rdram + pa, (uint16_t)v);
+		if (cpu->rdram_write_marks)
+			salsa64_write_marks_mark_range(cpu->rdram_write_marks, cpu->rdram_size, pa, 2);
 		vr4300_code_check(cpu, pa, 2);
 		return;
 	}
@@ -202,6 +207,8 @@ static inline void vr4300_write32(struct salsa64_cpu *cpu, uint32_t pa, uint32_t
 	VR4300_WATCH(pa, 1);
 	if (SALSA64_LIKELY(pa < cpu->rdram_size)) {
 		salsa64_wr32(cpu->rdram + pa, v);
+		if (cpu->rdram_write_marks)
+			salsa64_write_marks_mark_range(cpu->rdram_write_marks, cpu->rdram_size, pa, 4);
 		vr4300_code_check(cpu, pa, 4);
 		return;
 	}
@@ -213,6 +220,8 @@ static inline void vr4300_write64(struct salsa64_cpu *cpu, uint32_t pa, uint64_t
 	VR4300_WATCH(pa, 1);
 	if (SALSA64_LIKELY(pa < cpu->rdram_size)) {
 		salsa64_wr64(cpu->rdram + pa, v);
+		if (cpu->rdram_write_marks)
+			salsa64_write_marks_mark_range(cpu->rdram_write_marks, cpu->rdram_size, pa, 8);
 		vr4300_code_check(cpu, pa, 8);
 		return;
 	}
@@ -226,6 +235,8 @@ static inline void vr4300_write32_masked(struct salsa64_cpu *cpu, uint32_t pa, u
 	if (SALSA64_LIKELY(pa < cpu->rdram_size)) {
 		uint8_t *p = cpu->rdram + pa;
 		salsa64_wr32(p, (salsa64_rd32(p) & ~mask) | (v & mask));
+		if (cpu->rdram_write_marks)
+			salsa64_write_marks_mark_mask(cpu->rdram_write_marks, cpu->rdram_size, pa, mask, 4);
 		vr4300_code_check(cpu, pa, 4);
 		return;
 	}
@@ -238,6 +249,8 @@ static inline void vr4300_write64_masked(struct salsa64_cpu *cpu, uint32_t pa, u
 	if (SALSA64_LIKELY(pa < cpu->rdram_size)) {
 		uint8_t *p = cpu->rdram + pa;
 		salsa64_wr64(p, (salsa64_rd64(p) & ~mask) | (v & mask));
+		if (cpu->rdram_write_marks)
+			salsa64_write_marks_mark_mask(cpu->rdram_write_marks, cpu->rdram_size, pa, mask, 8);
 		vr4300_code_check(cpu, pa, 8);
 		return;
 	}

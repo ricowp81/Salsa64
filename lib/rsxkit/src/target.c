@@ -669,6 +669,69 @@ int rsxkit_target_fill_rows(rsxkit_target *t, uint32_t src_offset, uint32_t src_
 	return RSXKIT_OK;
 }
 
+static int target_fill_rect_mode(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t src_w,
+				 uint32_t src_h, uint32_t dst_x, uint32_t dst_y, uint32_t dst_w, uint32_t dst_h,
+				 bool blend, rsxkit_format format)
+{
+	if (!t || !t->used || !src_w || !src_h || !dst_w || !dst_h ||
+	    (unsigned)format >= RSXKIT_FORMAT_COUNT || (src_offset & 127) || (src_pitch & 63) ||
+	    (uint64_t)dst_x + dst_w > t->w || (uint64_t)dst_y + dst_h > t->h)
+		return RSXKIT_EARG;
+	if (rsxkit_blit_init() != RSXKIT_OK)
+		return RSXKIT_ENOMEM;
+	int rc = rsxkit_bind(t, NULL, (float)t->w, (float)t->h);
+	if (rc != RSXKIT_OK)
+		return rc;
+
+	gcmContextData *ctx = rsxkit_g.ctx;
+	rsxkit_reserve(RSXKIT_RESERVE_DRAW);
+	rsxkit_leave_3d();
+	rsxSetColorMask(ctx, GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
+	rsxSetDepthTestEnable(ctx, GCM_FALSE);
+	rsxSetDepthWriteEnable(ctx, GCM_FALSE);
+	rsxSetCullFaceEnable(ctx, GCM_FALSE);
+	if (blend) {
+		/* CopyColorFromRDRAM is a partial composite: coverage-one pixels blend,
+		 * while coverage-zero pixels leave the existing RSX surface untouched. */
+		rsxSetBlendEnable(ctx, GCM_TRUE);
+		rsxSetBlendEquation(ctx, GCM_FUNC_ADD, GCM_FUNC_ADD);
+		rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
+				t->alpha ? GCM_ONE : GCM_ZERO,
+				t->alpha ? GCM_ZERO : GCM_ONE);
+		rsxkit_blit_alpha(1);
+	} else {
+		/* A CPU pixel that changed from covered to uncovered must erase its
+		 * prior sprite pixel; blending its zero coverage bit would leave a trail. */
+		rsxSetBlendEnable(ctx, GCM_FALSE);
+		rsxkit_blit_alpha(t->alpha);
+	}
+	rsxSetAlphaTestEnable(ctx, GCM_FALSE);
+	rsxInvalidateTextureCache(ctx, GCM_INVALIDATE_TEXTURE);
+	rsxkit_rect dst = { (int32_t)dst_x, (int32_t)dst_y, dst_w, dst_h };
+	rsxkit_blit_to(src_offset, RSXKIT_MEM_MAIN, src_pitch, src_w, src_h, 0.0f, 0.0f, 1.0f, 1.0f,
+		       format, &dst, t->w, t->h, RSXKIT_FILTER_NEAREST);
+	rsxkit_blit_alpha(0);
+	rsxSetBlendEnable(ctx, GCM_FALSE);
+	rsxkit_g.state_valid = 0;
+	return RSXKIT_OK;
+}
+
+int rsxkit_target_fill_rect(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t src_w,
+			    uint32_t src_h, uint32_t dst_x, uint32_t dst_y, uint32_t dst_w, uint32_t dst_h,
+			    rsxkit_format format)
+{
+	return target_fill_rect_mode(t, src_offset, src_pitch, src_w, src_h, dst_x, dst_y, dst_w, dst_h,
+				     true, format);
+}
+
+int rsxkit_target_replace_rect(rsxkit_target *t, uint32_t src_offset, uint32_t src_pitch, uint32_t src_w,
+			       uint32_t src_h, uint32_t dst_x, uint32_t dst_y, uint32_t dst_w, uint32_t dst_h,
+			       rsxkit_format format)
+{
+	return target_fill_rect_mode(t, src_offset, src_pitch, src_w, src_h, dst_x, dst_y, dst_w, dst_h,
+				     false, format);
+}
+
 void rsxkit_pixels_565_to_5551(uint16_t *dst, const uint16_t *src, uint32_t n)
 {
 	uint32_t i = 0;
